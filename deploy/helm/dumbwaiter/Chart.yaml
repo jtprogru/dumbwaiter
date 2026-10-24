@@ -3,7 +3,7 @@ name: dumbwaiter
 description: Reverse proxy that serves static sites from S3-compatible storage
 type: application
 version: 0.1.0
-appVersion: "v0.1.0"
+appVersion: "0.1.0"
 # Mixed TCP and UDP ports on one LoadBalancer Service (tls.enabled) are GA
 # since 1.26.
 kubeVersion: ">=1.26.0-0"

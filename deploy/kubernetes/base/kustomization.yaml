@@ -21,4 +21,4 @@ configMapGenerator:
 images:
   - name: dumbwaiter
     newName: ghcr.io/jtprogru/dumbwaiter
-    newTag: v0.1.0
+    newTag: "0.1.0"

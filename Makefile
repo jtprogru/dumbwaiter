@@ -30,7 +30,9 @@ HELM         ?= helm
 COVERPROFILE ?= cover.out
 GOTEST_FLAGS ?= -v
 
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# One version string everywhere: binary, image, chart, release. Only the git
+# tag carries the "v" (v1.2.0), as Go modules require; the rest is 1.2.0.
+VERSION ?= $(patsubst v%,%,$(shell git describe --tags --always --dirty 2>/dev/null || echo dev))
 LDFLAGS ?= -s -w -X main.version=$(VERSION)
 
 IMAGE     ?= ghcr.io/jtprogru/dumbwaiter
@@ -122,7 +124,7 @@ ci-full: fmt-check tidy-check lint test-race govulncheck check-configs manifests
 docker-build: ## Build the image for the local platform
 	$(DOCKER) build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(IMAGE_TAG) .
 
-docker-push: ## Build a multi-arch image and push it: make docker-push IMAGE_TAG=v0.1.0
+docker-push: ## Build a multi-arch image and push it: make docker-push IMAGE_TAG=0.1.0
 	$(DOCKER) buildx build --platform $(PLATFORMS) --build-arg VERSION=$(VERSION) -t $(IMAGE):$(IMAGE_TAG) --push .
 
 # --- kubernetes -------------------------------------------------------------
