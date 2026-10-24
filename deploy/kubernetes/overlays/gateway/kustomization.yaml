@@ -1,0 +1,8 @@
+# TLS and HTTP/3 on a Gateway API implementation (Envoy Gateway, Cilium,
+# Istio, ...). The proxy only gets plain HTTP from it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - httproute.yaml

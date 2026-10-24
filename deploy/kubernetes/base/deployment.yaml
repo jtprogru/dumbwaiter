@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dumbwaiter
+spec:
+  replicas: 2
+  template:
+    spec:
+      automountServiceAccountToken: false
+      # shutdown_delay + shutdown_timeout from the config, plus a margin.
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dumbwaiter
+          image: dumbwaiter
+          args: ["-config", "/etc/dumbwaiter/config.yaml"]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: admin
+              containerPort: 9090
+          # S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY for ${...} in the config.
+          # Optional, so a public bucket works without the Secret.
+          envFrom:
+            - secretRef:
+                name: dumbwaiter-s3
+                optional: true
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/dumbwaiter
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: dumbwaiter-config

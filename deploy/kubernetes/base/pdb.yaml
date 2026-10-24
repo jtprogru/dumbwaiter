@@ -1,0 +1,11 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: dumbwaiter
+spec:
+  minAvailable: 1
+  # Must stay explicit: kustomize labels do not create a missing selector,
+  # and an empty one matches every pod in the namespace.
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dumbwaiter

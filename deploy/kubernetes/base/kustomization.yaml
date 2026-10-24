@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: dumbwaiter
+    includeSelectors: true
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - pdb.yaml
+
+# The hash suffix in the ConfigMap name rolls the Deployment on every
+# config change.
+configMapGenerator:
+  - name: dumbwaiter-config
+    files:
+      - config.yaml
+
+images:
+  - name: dumbwaiter
+    newName: ghcr.io/jtprogru/dumbwaiter
+    newTag: v0.1.0

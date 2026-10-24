@@ -1,0 +1,17 @@
+# cert-manager writes the certificate into the example-com-tls Secret,
+# dumbwaiter rereads it after renewal.
+#
+# Use a DNS-01 issuer: port 80 of the LoadBalancer goes to dumbwaiter,
+# not to the cert-manager HTTP-01 solver.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: example-com
+spec:
+  secretName: example-com-tls
+  dnsNames:
+    - example.com
+    - www.example.com
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-dns01

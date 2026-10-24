@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dumbwaiter
+spec:
+  template:
+    spec:
+      containers:
+        - name: dumbwaiter
+          # Only the TCP port is declared here: containerPort is informational,
+          # and two entries with the same number collide in strategic merge.
+          # The UDP Service port targets 8443 by number.
+          ports:
+            - name: https
+              containerPort: 8443
+          volumeMounts:
+            # Not under /etc/dumbwaiter: that ConfigMap mount is read-only
+            # and the runtime cannot create a nested mount point inside it.
+            - name: tls-example-com
+              mountPath: /etc/tls/example-com
+              readOnly: true
+      volumes:
+        - name: tls-example-com
+          secret:
+            secretName: example-com-tls

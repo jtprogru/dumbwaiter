@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: dumbwaiter-public
+spec:
+  type: LoadBalancer
+  # Keeps the client IP and avoids an extra hop between nodes.
+  externalTrafficPolicy: Local
+  # Labels from base do not reach overlay resources, so the selector is explicit.
+  selector:
+    app.kubernetes.io/name: dumbwaiter
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP
+    # TCP and UDP on one LoadBalancer (MixedProtocolLBService) is GA since
+    # Kubernetes 1.26, but the cloud provider has to support it too.
+    - name: h3
+      port: 443
+      targetPort: 8443
+      protocol: UDP

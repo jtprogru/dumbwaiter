@@ -1,0 +1,20 @@
+# The proxy terminates TLS itself and serves HTTP/1.1, HTTP/2 and HTTP/3
+# behind a LoadBalancer Service. Apply with `kubectl apply --server-side`:
+# client-side apply merges Service ports by number and loses one of the
+# two 443 entries (TCP and UDP).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - service-public.yaml
+  - certificate.yaml
+
+configMapGenerator:
+  - name: dumbwaiter-config
+    behavior: replace
+    files:
+      - config.yaml
+
+patches:
+  - path: deployment-patch.yaml
