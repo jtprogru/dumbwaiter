@@ -1,0 +1,150 @@
+version: "2"
+
+# The linter set mirrors jtprogru/srekit. Commented entries are off on purpose.
+linters:
+  default: none
+  enable:
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - canonicalheader
+    # - containedctx
+    - contextcheck
+    - copyloopvar
+    # - cyclop
+    # - depguard
+    # - dupl
+    - dupword
+    - durationcheck
+    # - err113
+    - errcheck
+    - errname
+    - errorlint
+    # - exhaustive
+    # - exhaustruct
+    - exptostd
+    - fatcontext
+    # - forcetypeassert
+    - funcorder
+    # - funlen
+    - gochecknoglobals
+    - gochecknoinits
+    - gochecksumtype
+    # - gocognit
+    # - goconst
+    - gocritic
+    # - gocyclo
+    - godot
+    - gomoddirectives
+    - gosec
+    - gosmopolitan
+    - govet
+    - iface
+    - inamedparam
+    - ineffassign
+    - intrange
+    # - ireturn
+    # - lll
+    - mirror
+    - misspell
+    # - mnd
+    - nakedret
+    # - nestif
+    - nilerr
+    - nilnesserr
+    - nilnil
+    # - nlreturn
+    - noctx
+    - nolintlint
+    # - nonamedreturns
+    - nosprintfhostport
+    # - paralleltest
+    - perfsprint
+    - prealloc
+    - predeclared
+    - promlinter
+    - protogetter
+    - reassign
+    - recvcheck
+    - revive
+    - rowserrcheck
+    - sloglint
+    - spancheck
+    - sqlclosecheck
+    - staticcheck
+    - tagalign
+    - tagliatelle
+    - testableexamples
+    - testifylint
+    # - testpackage
+    - thelper
+    - tparallel
+    - unconvert
+    - unparam
+    - unused
+    - usestdlibvars
+    - usetesting
+    # - varnamelen
+    - wastedassign
+    # - whitespace
+    # - wrapcheck
+    # - wsl
+    - zerologlint
+
+  settings:
+    tagliatelle:
+      case:
+        rules:
+          # Config keys are snake_case: read_header_timeout, path_style.
+          yaml: snake
+
+  exclusions:
+    generated: strict
+    warn-unused: false
+    presets:
+      - comments
+      - std-error-handling
+      - common-false-positives
+      - legacy
+    rules:
+      # Set at build time with -ldflags "-X main.version=...".
+      - path: cmd/dumbwaiter/main\.go
+        text: "version is a global variable"
+        linters:
+          - gochecknoglobals
+      # Fixed header and status lists the handler reads, never writes.
+      - path: internal/proxy/handler\.go
+        linters:
+          - gochecknoglobals
+      # A compiled regexp for ${VAR} references.
+      - path: internal/config/config\.go
+        text: "envRef is a global variable"
+        linters:
+          - gochecknoglobals
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - errcheck
+          - dupl
+          - gosec
+          - gochecknoglobals
+      - linters:
+          - staticcheck
+        text: "SA9003:"
+
+formatters:
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/jtprogru/dumbwaiter)
+        - blank
+        - dot
+        - alias
+        - localmodule
+      no-inline-comments: true
+      no-prefix-comments: true
+      custom-order: true
+      no-lex-order: true

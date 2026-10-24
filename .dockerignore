@@ -1,0 +1,7 @@
+.git
+.claude
+bin
+dist
+deploy
+*.out
+*.md
