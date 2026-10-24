@@ -1,0 +1,13 @@
+# TLS on an Ingress controller with cert-manager, the proxy gets plain HTTP.
+s3:
+  accessKeyId: placeholder
+  secretAccessKey: placeholder
+
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+  tls:
+    - secretName: example-com-tls
+      hosts: [example.com, www.example.com]

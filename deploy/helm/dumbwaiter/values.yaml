@@ -1,0 +1,215 @@
+# Three ways to publish the proxy, the same as the kustomize overlays in
+# deploy/kubernetes:
+#
+#   httpRoute.enabled  TLS on a Gateway API implementation, the proxy gets HTTP;
+#   ingress.enabled    TLS on an Ingress controller, the proxy gets HTTP;
+#   tls.enabled        TLS, HTTP/2 and HTTP/3 in the proxy behind a LoadBalancer.
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/jtprogru/dumbwaiter
+  # Defaults to the chart appVersion.
+  tag: ""
+  # Pins the image by digest, the tag is ignored then.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# config.yaml of the proxy. Full reference: config.example.yaml in the
+# repository root.
+#
+# ${VAR} is replaced with an environment variable at startup, an unset one
+# stops the proxy. Variables come from the S3 Secret below, extraEnv and
+# extraEnvFrom.
+#
+# The chart owns the listeners: server.http.addr and server.admin.addr come
+# from containerPorts, and the whole server.https block is generated from tls.
+# Everything else, including other server.* settings, is passed as is.
+config:
+  log:
+    level: info
+    format: json
+    access: true
+  s3:
+    endpoint: https://storage.yandexcloud.net
+    region: ru-central1
+    # Remove both keys for anonymous access to a public bucket.
+    access_key_id: ${S3_ACCESS_KEY_ID}
+    secret_access_key: ${S3_SECRET_ACCESS_KEY}
+  sites:
+    - hosts: [example.com, www.example.com]
+      bucket: example-com
+      not_found: 404.html
+
+# Values for ${S3_ACCESS_KEY_ID} and ${S3_SECRET_ACCESS_KEY} in config.
+s3:
+  # An existing Secret with the S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY keys.
+  existingSecret: ""
+  # Or let the chart create the Secret. existingSecret is safer: these values
+  # end up in the release Secret and often in git.
+  accessKeyId: ""
+  secretAccessKey: ""
+
+containerPorts:
+  http: 8080
+  https: 8443
+  admin: 9090
+
+# Cluster-internal Service for the plain HTTP port. Gateway and Ingress send
+# traffic here.
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+
+httpRoute:
+  enabled: false
+  annotations: {}
+  # An existing Gateway with an HTTPS listener for the hosts.
+  parentRefs:
+    - name: public
+      namespace: gateway-system
+  # Empty means every host from config.sites.
+  hostnames: []
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # cert-manager.io/cluster-issuer: letsencrypt
+  # Empty means every host from config.sites.
+  hosts: []
+  tls: []
+  # - secretName: example-com-tls
+  #   hosts: [example.com, www.example.com]
+
+# TLS termination in the proxy itself, with HTTP/2 and optionally HTTP/3.
+tls:
+  enabled: false
+  # Answer plain HTTP with a 301 to https. Keep it off when Gateway or Ingress
+  # also send traffic to the proxy, or you get a redirect loop.
+  redirectToHTTPS: true
+  # HTTP/3 over UDP on the same port.
+  http3: true
+  # How often the proxy rereads certificate files, so a renewed Secret applies
+  # without a restart.
+  reloadInterval: 1m
+  # Picked by SNI. The first one is served without SNI or without a match.
+  # Each kubernetes.io/tls Secret is mounted at /etc/tls/<name>.
+  certificates:
+    - name: example-com
+      secretName: example-com-tls
+      # Used for the cert-manager Certificate. Empty means every host from
+      # config.sites.
+      dnsNames: []
+      # Overrides certManager.issuerRef for this certificate.
+      # issuerRef: {}
+  certManager:
+    # Create a cert-manager Certificate for every entry in certificates.
+    # The issuer has to use DNS-01: port 80 of the LoadBalancer goes to the
+    # proxy, not to the HTTP-01 solver.
+    enabled: true
+    issuerRef:
+      kind: ClusterIssuer
+      name: letsencrypt-dns01
+  # The public Service with 80/TCP, 443/TCP and 443/UDP.
+  service:
+    type: LoadBalancer
+    annotations: {}
+    # Keeps the client IP and avoids an extra hop between nodes.
+    externalTrafficPolicy: Local
+    loadBalancerClass: ""
+    loadBalancerSourceRanges: []
+    httpPort: 80
+    # Also goes into Alt-Svc and redirects as server.https.public_port.
+    httpsPort: 443
+    # Put 443/UDP into a separate <fullname>-public-udp Service. Needed when
+    # the cloud load balancer cannot mix TCP and UDP, or with Helm 3: its
+    # client-side patches merge Service ports by number and drop one of the
+    # two 443 entries on upgrade. Pin both Services to one IP with
+    # provider-specific annotations.
+    separateUDP: false
+
+# shutdown_delay + shutdown_timeout from config, plus a margin.
+terminationGracePeriodSeconds: 40
+
+strategy: {}
+# type: RollingUpdate
+# rollingUpdate:
+#   maxUnavailable: 0
+#   maxSurge: 1
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: admin
+  periodSeconds: 5
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: admin
+  periodSeconds: 10
+
+# Extra variables, e.g. keys for a site with its own s3 block.
+extraEnv: []
+# - name: MINIO_ACCESS_KEY
+#   valueFrom:
+#     secretKeyRef:
+#       name: minio-credentials
+#       key: access-key
+extraEnvFrom: []
+extraVolumes: []
+extraVolumeMounts: []
+
+pdb:
+  enabled: true
+  minAvailable: 1
+  # Takes precedence over minAvailable when set.
+  maxUnavailable: ""
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: ""
+
+priorityClassName: ""
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+# - maxSkew: 1
+#   topologyKey: kubernetes.io/hostname
+#   whenUnsatisfiable: ScheduleAnyway
+#   labelSelector:
+#     matchLabels:
+#       app.kubernetes.io/name: dumbwaiter

@@ -1,0 +1,54 @@
+{{- if .Values.tls.enabled }}
+{{- $svc := .Values.tls.service }}
+{{- $splitUDP := and .Values.tls.http3 $svc.separateUDP }}
+# Public entry point when the proxy terminates TLS itself. TCP and UDP on one
+# port need server-side apply, which Helm 4 uses by default. See
+# tls.service.separateUDP for Helm 3 and load balancers without mixed protocols.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dumbwaiter.suffixedName" (dict "root" . "suffix" "public") }}
+  labels:
+    {{- include "dumbwaiter.labels" . | nindent 4 }}
+  {{- with $svc.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- include "dumbwaiter.publicServiceSpec" . | nindent 2 }}
+  ports:
+    - name: http
+      port: {{ $svc.httpPort }}
+      targetPort: http
+      protocol: TCP
+    - name: https
+      port: {{ $svc.httpsPort }}
+      targetPort: https
+      protocol: TCP
+    {{- if and .Values.tls.http3 (not $splitUDP) }}
+    - name: h3
+      port: {{ $svc.httpsPort }}
+      targetPort: {{ .Values.containerPorts.https }}
+      protocol: UDP
+    {{- end }}
+{{- if $splitUDP }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dumbwaiter.suffixedName" (dict "root" . "suffix" "public-udp") }}
+  labels:
+    {{- include "dumbwaiter.labels" . | nindent 4 }}
+  {{- with $svc.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- include "dumbwaiter.publicServiceSpec" . | nindent 2 }}
+  ports:
+    - name: h3
+      port: {{ $svc.httpsPort }}
+      targetPort: {{ .Values.containerPorts.https }}
+      protocol: UDP
+{{- end }}
+{{- end }}

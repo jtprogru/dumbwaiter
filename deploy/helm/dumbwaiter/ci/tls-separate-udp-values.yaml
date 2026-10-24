@@ -1,0 +1,15 @@
+# TLS in the proxy with 443/UDP in its own Service: for Helm 3 and load
+# balancers that cannot mix TCP and UDP.
+s3:
+  existingSecret: dumbwaiter-s3
+
+tls:
+  enabled: true
+  certManager:
+    enabled: false
+  service:
+    separateUDP: true
+    annotations:
+      metallb.universe.tf/allow-shared-ip: dumbwaiter
+
+replicaCount: 1

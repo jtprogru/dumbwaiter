@@ -1,0 +1,9 @@
+# TLS on a Gateway API implementation, the proxy gets plain HTTP.
+s3:
+  existingSecret: dumbwaiter-s3
+
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: public
+      namespace: gateway-system

@@ -1,0 +1,18 @@
+{{- /* A PDB over a single replica would block node drains forever. */ -}}
+{{- if and .Values.pdb.enabled (or .Values.autoscaling.enabled (gt (int .Values.replicaCount) 1)) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "dumbwaiter.fullname" . }}
+  labels:
+    {{- include "dumbwaiter.labels" . | nindent 4 }}
+spec:
+  {{- if .Values.pdb.maxUnavailable }}
+  maxUnavailable: {{ .Values.pdb.maxUnavailable }}
+  {{- else }}
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "dumbwaiter.selectorLabels" . | nindent 6 }}
+{{- end }}

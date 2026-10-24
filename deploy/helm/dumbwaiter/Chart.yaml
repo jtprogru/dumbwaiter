@@ -1,0 +1,20 @@
+apiVersion: v2
+name: dumbwaiter
+description: Reverse proxy that serves static sites from S3-compatible storage
+type: application
+version: 0.1.0
+appVersion: "v0.1.0"
+# Mixed TCP and UDP ports on one LoadBalancer Service (tls.enabled) are GA
+# since 1.26.
+kubeVersion: ">=1.26.0-0"
+home: https://github.com/jtprogru/dumbwaiter
+sources:
+  - https://github.com/jtprogru/dumbwaiter
+keywords:
+  - s3
+  - static-site
+  - reverse-proxy
+  - http3
+maintainers:
+  - name: jtprogru
+    url: https://github.com/jtprogru

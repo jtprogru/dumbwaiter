@@ -1,0 +1,39 @@
+{{- $fullname := include "dumbwaiter.fullname" . -}}
+{{- $hosts := fromJsonArray (include "dumbwaiter.hosts" .) -}}
+dumbwaiter {{ .Values.image.tag | default .Chart.AppVersion }} is deployed as {{ $fullname }} in {{ .Release.Namespace }}.
+Sites: {{ join ", " $hosts }}
+{{- if and (not (include "dumbwaiter.s3SecretName" .)) (not .Values.extraEnvFrom) (not .Values.extraEnv) (contains "${S3_" (toYaml .Values.config)) }}
+
+WARNING: config references ${S3_...} variables, but no Secret provides them.
+The pods will exit with "config references unset environment variables"
+until you set s3.existingSecret or s3.accessKeyId and s3.secretAccessKey.
+{{- end }}
+
+Check a site through the cluster-internal Service:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ $fullname }} 8080:{{ .Values.service.port }}
+  curl -sI -H 'Host: {{ first $hosts }}' http://127.0.0.1:8080/
+{{- if and .Values.tls.enabled .Values.tls.redirectToHTTPS }}
+
+Plain HTTP redirects to https here, so a 301 means the proxy is up.
+{{- end }}
+{{- if .Values.tls.enabled }}
+
+The proxy terminates TLS. External address of the LoadBalancer:
+
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "dumbwaiter.suffixedName" (dict "root" . "suffix" "public") }}
+{{- if and .Values.tls.http3 (not .Values.tls.service.separateUDP) }}
+
+443/TCP and 443/UDP share one Service. Helm 4 applies it server-side and keeps
+both ports. Helm 3 merges ports by number and may drop one of them on upgrade:
+set tls.service.separateUDP=true there.
+{{- end }}
+{{- end }}
+{{- if .Values.httpRoute.enabled }}
+
+HTTPRoute {{ $fullname }} is attached to: {{ range .Values.httpRoute.parentRefs }}{{ .namespace | default $.Release.Namespace }}/{{ .name }} {{ end }}
+{{- end }}
+{{- if .Values.ingress.enabled }}
+
+Ingress {{ $fullname }} serves: {{ join ", " (.Values.ingress.hosts | default $hosts) }}
+{{- end }}

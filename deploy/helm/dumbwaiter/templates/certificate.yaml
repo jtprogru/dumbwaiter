@@ -1,0 +1,20 @@
+{{- if and .Values.tls.enabled .Values.tls.certManager.enabled }}
+{{- $hosts := fromJsonArray (include "dumbwaiter.hosts" .) }}
+{{- range .Values.tls.certificates }}
+---
+# cert-manager writes the certificate into the Secret, the proxy rereads it
+# after renewal without a restart.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "dumbwaiter.suffixedName" (dict "root" $ "suffix" .name) }}
+  labels:
+    {{- include "dumbwaiter.labels" $ | nindent 4 }}
+spec:
+  secretName: {{ .secretName }}
+  dnsNames:
+    {{- toYaml (.dnsNames | default $hosts) | nindent 4 }}
+  issuerRef:
+    {{- toYaml (.issuerRef | default $.Values.tls.certManager.issuerRef) | nindent 4 }}
+{{- end }}
+{{- end }}
