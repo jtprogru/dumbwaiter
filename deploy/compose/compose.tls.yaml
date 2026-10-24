@@ -28,7 +28,7 @@ services:
       - "80:8080/tcp"
       - "443:8443/tcp"
       - "443:8443/udp"
-      # Health probes, reachable from the host only.
+      # Health probes and /metrics, reachable from the host only.
       - "127.0.0.1:9090:9090"
     volumes:
       # Read once at startup: docker compose restart dumbwaiter after edits.

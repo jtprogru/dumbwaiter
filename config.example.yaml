@@ -28,7 +28,7 @@ server:
     # Files are reread this often, so renewed Secrets apply without restart.
     reload_interval: 1m
 
-  # /healthz and /readyz.
+  # /healthz, /readyz and /metrics in the Prometheus text format.
   admin:
     addr: ":9090"
 

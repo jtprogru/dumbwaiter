@@ -28,8 +28,8 @@ services:
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?set S3_ACCESS_KEY_ID in .env}
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3_SECRET_ACCESS_KEY in .env}
     ports:
-      # Plain HTTP and health probes, reachable from the host only: for curl,
-      # an uptime check or nginx already running on the host.
+      # Plain HTTP, health probes and /metrics, reachable from the host only:
+      # for curl, an uptime check, vmagent or nginx already running on the host.
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:9090:9090"
     volumes:

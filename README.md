@@ -1,6 +1,6 @@
 # dumbwaiter
 
-Минимальный reverse proxy, который раздаёт статические сайты из S3-совместимого хранилища. Рассчитан на Kubernetes: один бинарник на stdlib плюс три зависимости (SigV4-подпись из aws-sdk-go-v2, quic-go для HTTP/3, yaml), distroless-образ, конфиг в YAML. Так же запускается на отдельном сервере в Docker Compose или как systemd-сервис.
+Минимальный reverse proxy, который раздаёт статические сайты из S3-совместимого хранилища. Рассчитан на Kubernetes: один бинарник на stdlib плюс четыре зависимости (SigV4-подпись из aws-sdk-go-v2, quic-go для HTTP/3, yaml, VictoriaMetrics/metrics для метрик), distroless-образ, конфиг в YAML. Так же запускается на отдельном сервере в Docker Compose или как systemd-сервис.
 
 ## Что умеет
 
@@ -14,7 +14,7 @@
 - Заголовки ответа из конфига, например HSTS или `Cache-Control`. Они перекрывают метаданные объекта.
 - Доступ к S3 с подписью SigV4 по статическим ключам или анонимно к публичному бакету, адресация path-style или virtual-hosted.
 - Опционально: TLS с выбором сертификата по SNI, HTTP/2 и HTTP/3. Сертификаты перечитываются с диска, обновлённый cert-manager'ом Secret подхватывается без рестарта.
-- `/healthz` и `/readyz` на отдельном admin-порту, graceful shutdown под SIGTERM.
+- `/healthz`, `/readyz` и метрики Prometheus на отдельном admin-порту, graceful shutdown под SIGTERM.
 
 ## Где терминировать TLS
 
@@ -165,7 +165,7 @@ $EDITOR config.tls.yaml
 docker compose up -d
 ```
 
-Конфиг читается один раз при старте, после правки нужен `docker compose restart dumbwaiter`. Admin-порт 9090 опубликован только на `127.0.0.1`, в варианте с Caddy там же HTTP-порт 8080. С хоста удобно проверять `curl http://127.0.0.1:9090/readyz` и `curl -sI -H 'Host: example.com' http://127.0.0.1:8080/`. Если на сервере уже стоит nginx, можно поднять только прокси (`docker compose up -d dumbwaiter`) и проксировать на `127.0.0.1:8080`. Healthcheck в compose не задан: в distroless-образе нет ни shell, ни curl.
+Конфиг читается один раз при старте, после правки нужен `docker compose restart dumbwaiter`. Admin-порт 9090 опубликован только на `127.0.0.1`, в варианте с Caddy там же HTTP-порт 8080. Метрики с хоста забирает vmagent или Prometheus по `http://127.0.0.1:9090/metrics`. С хоста удобно проверять `curl http://127.0.0.1:9090/readyz` и `curl -sI -H 'Host: example.com' http://127.0.0.1:8080/`. Если на сервере уже стоит nginx, можно поднять только прокси (`docker compose up -d dumbwaiter`) и проксировать на `127.0.0.1:8080`. Healthcheck в compose не задан: в distroless-образе нет ни shell, ни curl.
 
 ## systemd
 
@@ -228,6 +228,65 @@ sudo certbot renew --dry-run
 
 quic-go и в прокси, и в Caddy хочет UDP-буферы около 7 МБ и без них предупреждает при старте. На сервере это лечится `deploy/host/sysctl.conf` в `/etc/sysctl.d/`, изнутри контейнера эти параметры не поднять.
 
+## Метрики
+
+`GET /metrics` на admin-порту отдаёт метрики в текстовом формате Prometheus, его же читают VictoriaMetrics и vmagent. Гистограммы классические, с бакетами `le`, так что `histogram_quantile` работает и в PromQL, и в MetricsQL. Admin-порт не нужно публиковать наружу: в Kubernetes метрики собирают прямо с pod'ов, в Compose и systemd порт слушает только `127.0.0.1`.
+
+| Метрика | Тип | Лейблы | Что показывает |
+|---|---|---|---|
+| `dumbwaiter_http_requests_total` | counter | `listener`, `proto`, `host`, `method`, `code` | запросы к публичным слушателям |
+| `dumbwaiter_http_request_duration_seconds` | histogram | `listener`, `host` | время ответа вместе с передачей тела |
+| `dumbwaiter_http_response_bytes_total` | counter | `listener`, `host` | отданные байты тела ответа |
+| `dumbwaiter_http_requests_in_flight` | gauge | `listener` | запросы в обработке, включая идущие скачивания |
+| `dumbwaiter_s3_requests_total` | counter | `bucket`, `method`, `code` | запросы к S3 |
+| `dumbwaiter_s3_request_duration_seconds` | histogram | `bucket`, `method` | время до заголовков ответа S3 |
+| `dumbwaiter_tls_certificate_expiration_timestamp_seconds` | gauge | `cert` | `NotAfter` загруженного сертификата в unix time |
+| `dumbwaiter_tls_certificate_reloads_total` | counter | | перечитывания, после которых сертификаты сменились |
+| `dumbwaiter_tls_certificate_reload_errors_total` | counter | | перечитывания с ошибкой, прокси остался на старых сертификатах |
+| `dumbwaiter_build_info` | gauge | `version`, `goversion` | всегда 1 |
+
+Рядом лежат стандартные `go_*` и `process_*`.
+
+`listener` принимает значения `http`, `https` и `http3`, `proto` — `HTTP/1`, `HTTP/2` и `HTTP/3`, `method` — `GET`, `HEAD` и `OTHER`. В `host` попадают только хосты из конфига, запросы с любым другим `Host` идут как `unknown`, иначе сканер с выдуманными доменами раздул бы число серий. `code` у S3 равен статусу ответа, а если ответа не было — `error`, `timeout` или `canceled`. `canceled` значит, что клиент ушёл раньше, чем ответил S3: такие запросы считаются, но в гистограмму не попадают, потому что ничего не говорят о задержке хранилища.
+
+`dumbwaiter_http_request_duration_seconds` меряет ответ целиком, поэтому большой файл, отданный медленному клиенту, растягивает хвост. Задержку самого хранилища честнее смотреть по `dumbwaiter_s3_request_duration_seconds`. `502` в `dumbwaiter_http_requests_total` почти всегда означает проблему с S3, подробности с кодом ошибки S3 лежат в логе.
+
+В Helm сбор включается одним из флагов:
+
+- `metrics.podMonitor.enabled` создаёт `PodMonitor` для Prometheus Operator. VictoriaMetrics Operator по умолчанию сам превращает его в `VMPodScrape`, если в кластере стоят CRD `monitoring.coreos.com`;
+- `metrics.vmPodScrape.enabled` создаёт `VMPodScrape` для VictoriaMetrics Operator без CRD Prometheus;
+- `metrics.scrapeAnnotations` вешает на pod'ы аннотации `prometheus.io/scrape`, `port` и `path` для сбора по аннотациям.
+
+В kustomize-манифестах готового объекта нет, `PodMonitor` выглядит так:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: dumbwaiter
+spec:
+  podMetricsEndpoints:
+    - port: admin
+      path: /metrics
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dumbwaiter
+```
+
+Несколько запросов для начала:
+
+```promql
+# доля 5xx по хостам
+sum by (host) (rate(dumbwaiter_http_requests_total{code=~"5.."}[5m]))
+  / sum by (host) (rate(dumbwaiter_http_requests_total[5m]))
+
+# p99 задержки S3 по бакетам
+histogram_quantile(0.99, sum by (bucket, le) (rate(dumbwaiter_s3_request_duration_seconds_bucket[5m])))
+
+# сертификат истекает меньше чем через 14 дней
+dumbwaiter_tls_certificate_expiration_timestamp_seconds - time() < 14 * 86400
+```
+
 ## Сборка
 
 `make` без аргументов показывает все цели. Основные:
@@ -248,4 +307,4 @@ golangci-lint и govulncheck ставятся в `./bin` запиненных в
 
 ## Чего нет и не планируется
 
-Кэша в прокси нет: S3 и браузерный кэш с `ETag` справляются, а для серьёзной нагрузки перед прокси лучше поставить CDN. Метрик Prometheus пока нет, только access-лог в JSON (`log.access: false` его выключает). Wildcard-домены не поддерживаются.
+Кэша в прокси нет: S3 и браузерный кэш с `ETag` справляются, а для серьёзной нагрузки перед прокси лучше поставить CDN. Трейсинга нет, есть метрики и access-лог в JSON (`log.access: false` его выключает, метрики продолжают считаться). Wildcard-домены не поддерживаются.

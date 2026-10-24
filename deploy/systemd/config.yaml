@@ -18,7 +18,7 @@ server:
     certificates:
       - cert: /etc/dumbwaiter/tls/example.com/tls.crt
         key: /etc/dumbwaiter/tls/example.com/tls.key
-  # Health probes, for the host only.
+  # Health probes and /metrics, for the host only.
   admin:
     addr: "127.0.0.1:9090"
   # How long to keep serving after SIGTERM. A single host has no load
