@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -142,6 +143,8 @@ sites: [{hosts: [example.com], bucket: site}]
 			`dumbwaiter_http_requests_in_flight{listener="https"} 0`,
 			`dumbwaiter_s3_requests_total{bucket="site",method="GET",code="200"} 2`,
 			`dumbwaiter_s3_request_duration_seconds_count{bucket="site",method="GET"} 2`,
+			`dumbwaiter_tls_certificate_expiration_timestamp_seconds{cert="` + crtPath + `"} ` + strconv.FormatInt(cert.NotAfter.Unix(), 10),
+			`dumbwaiter_tls_certificate_reload_errors_total 0`,
 			`dumbwaiter_build_info{version="test",goversion="` + runtime.Version() + `"} 1`,
 			"\ngo_goroutines ",
 		} {

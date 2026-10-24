@@ -16,21 +16,30 @@ import (
 	"time"
 
 	"github.com/jtprogru/dumbwaiter/internal/config"
+	"github.com/jtprogru/dumbwaiter/internal/metrics"
 )
 
 type Store struct {
-	pairs []config.Certificate
-	log   *slog.Logger
+	pairs   []config.Certificate
+	log     *slog.Logger
+	metrics *metrics.TLS
 
 	certs atomic.Pointer[[]*tls.Certificate]
 	sum   []byte
 }
 
 // Load reads all certificates. Unlike reloads, a failure here is fatal.
-func Load(pairs []config.Certificate, log *slog.Logger) (*Store, error) {
-	s := &Store{pairs: pairs, log: log}
+func Load(pairs []config.Certificate, m *metrics.Metrics, log *slog.Logger) (*Store, error) {
+	s := &Store{pairs: pairs, log: log, metrics: m.TLS()}
 	if _, err := s.reload(); err != nil {
 		return nil, err
+	}
+	// reload keeps the order of pairs, so index i always points to the
+	// certificate from pairs[i], old or renewed.
+	for i, p := range pairs {
+		s.metrics.Certificate(p.Cert, func() time.Time {
+			return (*s.certs.Load())[i].Leaf.NotAfter
+		})
 	}
 	return s, nil
 }
@@ -59,8 +68,10 @@ func (s *Store) Watch(ctx context.Context, interval time.Duration) {
 			changed, err := s.reload()
 			switch {
 			case err != nil:
+				s.metrics.Failed()
 				s.log.Warn("tls certificates reload failed, keeping the old ones", "err", err)
 			case changed:
+				s.metrics.Reloaded()
 				s.log.Info("tls certificates reloaded", "count", len(s.pairs))
 			}
 		}

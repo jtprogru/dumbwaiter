@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jtprogru/dumbwaiter/internal/config"
+	"github.com/jtprogru/dumbwaiter/internal/metrics"
 	"github.com/jtprogru/dumbwaiter/internal/testcert"
 )
 
@@ -14,7 +15,7 @@ func TestSNIAndReload(t *testing.T) {
 	aCrt, aKey, aCert := testcert.Write(t, dir, "a", "a.test", "www.a.test")
 	bCrt, bKey, bCert := testcert.Write(t, dir, "b", "b.test")
 
-	s, err := Load([]config.Certificate{{Cert: aCrt, Key: aKey}, {Cert: bCrt, Key: bKey}}, slog.New(slog.DiscardHandler))
+	s, err := Load([]config.Certificate{{Cert: aCrt, Key: aKey}, {Cert: bCrt, Key: bKey}}, metrics.New(), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +61,7 @@ func TestSNIAndReload(t *testing.T) {
 func TestBrokenReloadKeepsOldCertificates(t *testing.T) {
 	dir := t.TempDir()
 	crt, key, cert := testcert.Write(t, dir, "a", "a.test")
-	s, err := Load([]config.Certificate{{Cert: crt, Key: key}}, slog.New(slog.DiscardHandler))
+	s, err := Load([]config.Certificate{{Cert: crt, Key: key}}, metrics.New(), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}

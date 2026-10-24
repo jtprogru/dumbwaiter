@@ -78,7 +78,7 @@ func New(ctx context.Context, cfg *config.Config, sites Sites, m *metrics.Metric
 	s.adminSrv = newHTTPServer(s.adminHandler(), nil)
 
 	if https := sc.HTTPS; https != nil {
-		if s.certs, err = tlsstore.Load(https.Certificates, log); err != nil {
+		if s.certs, err = tlsstore.Load(https.Certificates, m, log); err != nil {
 			return nil, fmt.Errorf("load tls certificates: %w", err)
 		}
 		tlsConf := &tls.Config{
