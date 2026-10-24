@@ -1,0 +1,18 @@
+# Build output and pinned tools (make build, make tools)
+dist/
+bin/
+
+# Test binaries and coverage
+*.test
+*.out
+
+*.log
+.DS_Store
+
+# Docker Compose on a host: S3 keys and certificates (deploy/compose)
+deploy/compose/.env
+deploy/compose/certs/
+
+# Claude Code: personal permissions and local worktrees stay local
+.claude/settings.local.json
+.claude/worktrees/
