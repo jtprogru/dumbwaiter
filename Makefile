@@ -119,6 +119,20 @@ ci: lint test-race ## Quick pre-push check: lint + race tests
 
 ci-full: fmt-check tidy-check lint test-race govulncheck check-configs manifests helm-lint compose-config ## Everything CI runs
 
+# --- release ----------------------------------------------------------------
+
+# Release artifacts take the version from the tag. This pins it where the
+# repository is used directly: the chart, the kustomize base, docker compose.
+# A leading "v" is dropped, so VERSION=v1.2.0 works too.
+set-version: SET_VERSION = $(patsubst v%,%,$(VERSION))
+set-version: ## Pin a version in the chart, kustomize and compose: make set-version VERSION=1.2.0
+	@echo '$(SET_VERSION)' | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$$' || { echo 'usage: make set-version VERSION=1.2.0, got "$(VERSION)"'; exit 1; }
+	perl -pi -e 's/^version: .*/version: $(SET_VERSION)/; s/^appVersion: .*/appVersion: "$(SET_VERSION)"/' $(CHART)/Chart.yaml
+	perl -pi -e 's/^(\s*newTag:) .*/$$1 "$(SET_VERSION)"/' deploy/kubernetes/base/kustomization.yaml
+	perl -pi -e 's/(DUMBWAITER_TAG:-)[^}]*/$${1}$(SET_VERSION)/' $(addprefix $(COMPOSE_DIR)/,$(COMPOSE_FILES))
+	perl -pi -e 's/^DUMBWAITER_TAG=.*/DUMBWAITER_TAG=$(SET_VERSION)/' $(COMPOSE_DIR)/.env.example
+	@git --no-pager diff --stat -- $(CHART)/Chart.yaml deploy/kubernetes/base/kustomization.yaml $(COMPOSE_DIR)
+
 # --- image ------------------------------------------------------------------
 
 docker-build: ## Build the image for the local platform
@@ -189,5 +203,5 @@ clean: ## Remove build artifacts
 	rm -rf $(DIST_DIR) $(LOCALBIN) $(COVERPROFILE)
 
 .PHONY: help run build tidy fmt vet fmt-check tidy-check test test-race lint lint-fix govulncheck \
-        check-configs ci ci-full docker-build docker-push manifests diff deploy \
+        check-configs ci ci-full set-version docker-build docker-push manifests diff deploy \
         helm-lint compose-config tools clean
