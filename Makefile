@@ -83,6 +83,13 @@ fmt: ## gofmt -s -w .
 vet: ## go vet ./...
 	$(GO) vet ./...
 
+# Only tracked files: worktrees under .claude/ are not ours to judge.
+fmt-check: ## Fail if a tracked .go file needs gofmt -s
+	@files=$$(gofmt -s -l $$(git ls-files '*.go')); if [ -n "$$files" ]; then echo "needs gofmt -s (run make fmt):"; echo "$$files"; exit 1; fi
+
+tidy-check: ## Fail if go.mod or go.sum need go mod tidy
+	$(GO) mod tidy -diff
+
 # --- test / lint ------------------------------------------------------------
 
 test: ## Short tests with coverage
@@ -108,7 +115,7 @@ check-configs: build ## Validate every committed YAML config
 
 ci: lint test-race ## Quick pre-push check: lint + race tests
 
-ci-full: lint test-race govulncheck check-configs manifests helm-lint compose-config ## Everything CI runs
+ci-full: fmt-check tidy-check lint test-race govulncheck check-configs manifests helm-lint compose-config ## Everything CI runs
 
 # --- image ------------------------------------------------------------------
 
@@ -179,6 +186,6 @@ $(GOVULNCHECK_STAMP):
 clean: ## Remove build artifacts
 	rm -rf $(DIST_DIR) $(LOCALBIN) $(COVERPROFILE)
 
-.PHONY: help run build tidy fmt vet test test-race lint lint-fix govulncheck \
+.PHONY: help run build tidy fmt vet fmt-check tidy-check test test-race lint lint-fix govulncheck \
         check-configs ci ci-full docker-build docker-push manifests diff deploy \
         helm-lint compose-config tools clean
