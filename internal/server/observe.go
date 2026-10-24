@@ -4,15 +4,32 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/jtprogru/dumbwaiter/internal/config"
+	"github.com/jtprogru/dumbwaiter/internal/metrics"
 )
 
-func accessLog(log *slog.Logger, next http.Handler) http.Handler {
+// observe records metrics for every request and, unless log is nil, writes
+// the access log line.
+func observe(stats *metrics.HTTP, sites Sites, log *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		stats.Start()
 		rec := &recorder{ResponseWriter: w}
 		next.ServeHTTP(rec, r)
 		if rec.status == 0 {
 			rec.status = http.StatusOK
+		}
+		elapsed := time.Since(start)
+
+		var host string
+		if sites.HasHost(r.Host) {
+			host = config.NormalizeHost(r.Host)
+		}
+		stats.Done(r, host, rec.status, rec.bytes, elapsed)
+
+		if log == nil {
+			return
 		}
 		log.Info("request",
 			"proto", r.Proto,
@@ -21,7 +38,7 @@ func accessLog(log *slog.Logger, next http.Handler) http.Handler {
 			"path", r.URL.Path,
 			"status", rec.status,
 			"bytes", rec.bytes,
-			"duration_ms", time.Since(start).Milliseconds(),
+			"duration_ms", elapsed.Milliseconds(),
 			"remote", r.RemoteAddr,
 			"user_agent", r.UserAgent(),
 		)

@@ -1,5 +1,5 @@
 // Package server runs the listeners: plain HTTP, optional HTTPS with
-// HTTP/2 and HTTP/3, and the admin port with health probes.
+// HTTP/2 and HTTP/3, and the admin port with health probes and metrics.
 package server
 
 import (
@@ -18,6 +18,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 
 	"github.com/jtprogru/dumbwaiter/internal/config"
+	"github.com/jtprogru/dumbwaiter/internal/metrics"
 	"github.com/jtprogru/dumbwaiter/internal/tlsstore"
 )
 
@@ -28,9 +29,10 @@ type Sites interface {
 }
 
 type Server struct {
-	cfg   *config.Config
-	log   *slog.Logger
-	ready atomic.Bool
+	cfg     *config.Config
+	log     *slog.Logger
+	metrics *metrics.Metrics
+	ready   atomic.Bool
 
 	certs *tlsstore.Store
 
@@ -42,8 +44,8 @@ type Server struct {
 }
 
 // New binds all listeners, so a busy port fails here and not later.
-func New(ctx context.Context, cfg *config.Config, sites Sites, log *slog.Logger) (srv *Server, err error) {
-	s := &Server{cfg: cfg, log: log}
+func New(ctx context.Context, cfg *config.Config, sites Sites, m *metrics.Metrics, log *slog.Logger) (srv *Server, err error) {
+	s := &Server{cfg: cfg, log: log, metrics: m}
 	defer func() {
 		if err != nil {
 			s.closeListeners()
@@ -53,11 +55,12 @@ func New(ctx context.Context, cfg *config.Config, sites Sites, log *slog.Logger)
 	var lc net.ListenConfig
 	sc := cfg.Server
 	errorLog := slog.NewLogLogger(log.Handler(), slog.LevelWarn)
-	logged := func(h http.Handler) http.Handler {
-		if !cfg.Log.AccessEnabled() {
-			return h
-		}
-		return accessLog(log, h)
+	var accessLog *slog.Logger
+	if cfg.Log.AccessEnabled() {
+		accessLog = log
+	}
+	observed := func(listener string, h http.Handler) http.Handler {
+		return observe(m.HTTP(listener), sites, accessLog, h)
 	}
 	newHTTPServer := func(h http.Handler, p *http.Protocols) *http.Server {
 		return &http.Server{
@@ -89,7 +92,7 @@ func New(ctx context.Context, cfg *config.Config, sites Sites, log *slog.Logger)
 				return nil, fmt.Errorf("http3 listener: %w", err)
 			}
 			s.h3Srv = &http3.Server{
-				Handler: logged(sites),
+				Handler: observed("http3", sites),
 				// Serve sets the h3 ALPN itself. QUIC enforces TLS 1.3.
 				TLSConfig:   tlsConf.Clone(),
 				Port:        https.PublicPort,
@@ -105,7 +108,7 @@ func New(ctx context.Context, cfg *config.Config, sites Sites, log *slog.Logger)
 		var p http.Protocols
 		p.SetHTTP1(true)
 		p.SetHTTP2(true)
-		s.httpsSrv = newHTTPServer(logged(handler), &p)
+		s.httpsSrv = newHTTPServer(observed("https", handler), &p)
 		s.httpsSrv.TLSConfig = tlsConf
 	}
 
@@ -119,7 +122,7 @@ func New(ctx context.Context, cfg *config.Config, sites Sites, log *slog.Logger)
 	var p http.Protocols
 	p.SetHTTP1(true)
 	p.SetUnencryptedHTTP2(sc.HTTP.H2C)
-	s.httpSrv = newHTTPServer(logged(handler), &p)
+	s.httpSrv = newHTTPServer(observed("http", handler), &p)
 
 	return s, nil
 }
@@ -226,6 +229,7 @@ func (s *Server) adminHandler() http.Handler {
 		}
 		_, _ = w.Write([]byte("ok\n"))
 	})
+	mux.Handle("GET /metrics", s.metrics.Handler())
 	return mux
 }
 

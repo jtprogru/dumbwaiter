@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/jtprogru/dumbwaiter/internal/config"
+	"github.com/jtprogru/dumbwaiter/internal/metrics"
 	"github.com/jtprogru/dumbwaiter/internal/proxy"
 	"github.com/jtprogru/dumbwaiter/internal/server"
 )
@@ -48,6 +49,9 @@ func run() error {
 	log := newLogger(cfg.Log)
 	slog.SetDefault(log)
 
+	m := metrics.New()
+	m.BuildInfo(version)
+
 	sites, err := proxy.New(cfg, log)
 	if err != nil {
 		return err
@@ -55,7 +59,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	srv, err := server.New(ctx, cfg, sites, log)
+	srv, err := server.New(ctx, cfg, sites, m, log)
 	if err != nil {
 		return err
 	}

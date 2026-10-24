@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 
 	"github.com/jtprogru/dumbwaiter/internal/config"
+	"github.com/jtprogru/dumbwaiter/internal/metrics"
 	"github.com/jtprogru/dumbwaiter/internal/proxy"
 	"github.com/jtprogru/dumbwaiter/internal/testcert"
 )
@@ -49,11 +51,13 @@ sites: [{hosts: [example.com], bucket: site}]
 	}
 
 	log := slog.New(slog.DiscardHandler)
+	m := metrics.New()
+	m.BuildInfo("test")
 	sites, err := proxy.New(cfg, log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := New(t.Context(), cfg, sites, log)
+	srv, err := New(t.Context(), cfg, sites, m, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +110,45 @@ sites: [{hosts: [example.com], bucket: site}]
 		res := do(t, &http.Client{Transport: tr}, http.MethodPost, "https://"+srv.HTTP3Addr()+"/")
 		if res.status != http.StatusMethodNotAllowed {
 			t.Errorf("status = %d", res.status)
+		}
+	})
+
+	t.Run("unknown host", func(t *testing.T) {
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+srv.HTTPAddr()+"/", nil)
+		req.Host = "scanner.test"
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("status = %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("metrics", func(t *testing.T) {
+		res := do(t, http.DefaultClient, http.MethodGet, "http://"+srv.AdminAddr()+"/metrics")
+		if res.status != http.StatusOK {
+			t.Fatalf("status = %d", res.status)
+		}
+		for _, want := range []string{
+			`dumbwaiter_http_requests_total{listener="http",proto="HTTP/1",host="example.com",method="GET",code="301"} 1`,
+			`dumbwaiter_http_requests_total{listener="https",proto="HTTP/2",host="example.com",method="GET",code="200"} 1`,
+			`dumbwaiter_http_requests_total{listener="http3",proto="HTTP/3",host="example.com",method="GET",code="200"} 1`,
+			`dumbwaiter_http_requests_total{listener="http3",proto="HTTP/3",host="example.com",method="OTHER",code="405"} 1`,
+			`dumbwaiter_http_requests_total{listener="http",proto="HTTP/1",host="unknown",method="GET",code="404"} 1`,
+			`dumbwaiter_http_request_duration_seconds_count{listener="https",host="example.com"} 1`,
+			`dumbwaiter_http_response_bytes_total{listener="https",host="example.com"} 5`,
+			`dumbwaiter_http_requests_in_flight{listener="https"} 0`,
+			`dumbwaiter_build_info{version="test",goversion="` + runtime.Version() + `"} 1`,
+			"\ngo_goroutines ",
+		} {
+			if !strings.Contains(res.body, want) {
+				t.Errorf("metrics lack %s", want)
+			}
+		}
+		if strings.Contains(res.body, "scanner.test") {
+			t.Error("a host from the request leaked into labels")
 		}
 	})
 
