@@ -1,0 +1,86 @@
+# Full reference of dumbwaiter settings. Every value except s3.endpoint and
+# sites is optional, the defaults are shown.
+#
+# ${VAR} is replaced with the environment variable VAR before parsing.
+# An unset variable stops the startup. A bare $ is left as is.
+
+server:
+  http:
+    addr: ":8080"
+    # HTTP/2 without TLS (prior knowledge). Useful behind Envoy or a Gateway
+    # that talks h2c to backends.
+    h2c: false
+    # Answer every plain HTTP request with a 301 to https. Needs server.https.
+    redirect_to_https: false
+
+  # TLS termination in the proxy itself. Remove the block when TLS ends on
+  # Ingress or Gateway.
+  https:
+    addr: ":8443"
+    # The port clients see. Goes into Alt-Svc and http->https redirects.
+    public_port: 443
+    # HTTP/3 over UDP on the same port as addr.
+    http3: true
+    # Picked by SNI. Without a match, or without SNI, the first one is used.
+    certificates:
+      - cert: /etc/tls/example-com/tls.crt
+        key: /etc/tls/example-com/tls.key
+    # Files are reread this often, so renewed Secrets apply without restart.
+    reload_interval: 1m
+
+  # /healthz and /readyz.
+  admin:
+    addr: ":9090"
+
+  read_header_timeout: 10s
+  idle_timeout: 120s
+  # After SIGTERM: /readyz fails, the proxy keeps serving for shutdown_delay,
+  # then waits up to shutdown_timeout for in-flight requests.
+  shutdown_delay: 5s
+  shutdown_timeout: 30s
+
+log:
+  level: info    # debug, info, warn, error
+  format: json   # json, text
+  access: true   # one line per request
+
+# Default storage for all sites.
+s3:
+  endpoint: https://storage.yandexcloud.net
+  region: ru-central1
+  # true:  https://endpoint/bucket/key  (MinIO, Ceph, most self-hosted)
+  # false: https://bucket.endpoint/key  (AWS default)
+  path_style: false
+  # Leave both empty for anonymous access to a public bucket.
+  access_key_id: ${S3_ACCESS_KEY_ID}
+  secret_access_key: ${S3_SECRET_ACCESS_KEY}
+  # Time to wait for S3 response headers.
+  timeout: 30s
+
+sites:
+  - hosts: [example.com, www.example.com]
+    bucket: example-com
+    # Key prefix inside the bucket.
+    prefix: ""
+    # Object served for /, /docs/ and so on. /docs redirects to /docs/.
+    index: index.html
+    # Served with status 404 when nothing matched.
+    not_found: 404.html
+    headers:
+      Strict-Transport-Security: max-age=31536000
+      X-Content-Type-Options: nosniff
+
+  # A single page application: /users/42 gets the root index.html, while a
+  # missing /app.js still returns 404.
+  - hosts: [app.example.com]
+    bucket: app-example-com
+    prefix: dist/
+    spa: true
+    headers:
+      # Headers from the config override the ones stored with objects.
+      Cache-Control: no-cache
+    # A site may use its own storage. The block replaces the top-level s3
+    # entirely, nothing is inherited.
+    s3:
+      endpoint: http://minio.storage.svc:9000
+      path_style: true
