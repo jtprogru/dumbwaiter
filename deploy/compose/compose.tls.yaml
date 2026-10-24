@@ -1,0 +1,49 @@
+# dumbwaiter terminates TLS itself and serves HTTP/1.1, HTTP/2 and HTTP/3
+# straight on 80 and 443, without Caddy. Certificates come from outside, e.g.
+# certbot with deploy/host/certbot-deploy-hook.sh, and are reread without a
+# restart.
+#
+#   cp .env.example .env      # S3 keys, image tag
+#   $EDITOR config.tls.yaml   # sites, buckets, certificates
+#   docker compose -f compose.tls.yaml up -d
+#
+# or put COMPOSE_FILE=compose.tls.yaml into .env and drop the -f.
+#
+# Self-contained on purpose: extends would also interpolate compose.yaml and
+# demand SITE_DOMAINS for Caddy, which this setup does not run.
+
+name: dumbwaiter
+
+services:
+  dumbwaiter:
+    image: ${DUMBWAITER_IMAGE:-ghcr.io/jtprogru/dumbwaiter}:${DUMBWAITER_TAG:-v0.1.0}
+    restart: unless-stopped
+    command: ["-config", "/etc/dumbwaiter/config.yaml"]
+    environment:
+      # For ${S3_ACCESS_KEY_ID} and ${S3_SECRET_ACCESS_KEY} in config.tls.yaml.
+      # For a public bucket delete both here and in config.tls.yaml.
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?set S3_ACCESS_KEY_ID in .env}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3_SECRET_ACCESS_KEY in .env}
+    ports:
+      - "80:8080/tcp"
+      - "443:8443/tcp"
+      - "443:8443/udp"
+      # Health probes, reachable from the host only.
+      - "127.0.0.1:9090:9090"
+    volumes:
+      # Read once at startup: docker compose restart dumbwaiter after edits.
+      - ./config.tls.yaml:/etc/dumbwaiter/config.yaml:ro
+      # A directory, not single files: the deploy hook swaps files by rename,
+      # and a single-file bind mount keeps pointing at the old one.
+      - ./certs:/etc/tls:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # shutdown_delay + shutdown_timeout from the config, plus a margin.
+    stop_grace_period: 40s
+    logging:
+      driver: json-file
+      options:
+        # The access log writes a line per request, keep it from filling the disk.
+        max-size: 10m
+        max-file: "5"

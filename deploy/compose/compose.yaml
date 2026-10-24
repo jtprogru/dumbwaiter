@@ -1,0 +1,70 @@
+# dumbwaiter on a single host with Docker Compose. Caddy in front terminates
+# TLS: certificates from Let's Encrypt, HTTP/2 and HTTP/3. dumbwaiter gets
+# plain HTTP over the compose network.
+#
+#   cp .env.example .env    # S3 keys, domains, image tag
+#   $EDITOR config.yaml     # sites and buckets
+#   docker compose up -d
+#
+# TLS in dumbwaiter itself, without Caddy: compose.tls.yaml.
+
+name: dumbwaiter
+
+x-logging: &logging
+  driver: json-file
+  options:
+    # The access log writes a line per request, keep it from filling the disk.
+    max-size: 10m
+    max-file: "5"
+
+services:
+  dumbwaiter:
+    image: ${DUMBWAITER_IMAGE:-ghcr.io/jtprogru/dumbwaiter}:${DUMBWAITER_TAG:-v0.1.0}
+    restart: unless-stopped
+    command: ["-config", "/etc/dumbwaiter/config.yaml"]
+    environment:
+      # For ${S3_ACCESS_KEY_ID} and ${S3_SECRET_ACCESS_KEY} in config.yaml.
+      # For a public bucket delete both here and in config.yaml.
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?set S3_ACCESS_KEY_ID in .env}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3_SECRET_ACCESS_KEY in .env}
+    ports:
+      # Plain HTTP and health probes, reachable from the host only: for curl,
+      # an uptime check or nginx already running on the host.
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9090:9090"
+    volumes:
+      # Read once at startup: docker compose restart dumbwaiter after edits.
+      - ./config.yaml:/etc/dumbwaiter/config.yaml:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # shutdown_delay + shutdown_timeout from the config, plus a margin.
+    stop_grace_period: 40s
+    logging: *logging
+
+  caddy:
+    image: caddy:2.11.7-alpine
+    restart: unless-stopped
+    depends_on: [dumbwaiter]
+    environment:
+      SITE_DOMAINS: ${SITE_DOMAINS:?list the domains in .env, comma-separated}
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and the ACME account. Without them every restart
+      # reissues certificates and runs into Let's Encrypt rate limits.
+      - caddy-data:/data
+      - caddy-config:/config
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+
+volumes:
+  caddy-data:
+  caddy-config:

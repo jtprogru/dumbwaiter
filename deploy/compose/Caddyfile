@@ -1,0 +1,9 @@
+# Caddy in front of dumbwaiter: certificates from Let's Encrypt, HTTP->HTTPS
+# redirects, HTTP/2 and HTTP/3. SITE_DOMAINS comes from .env. The Host header
+# goes upstream unchanged, dumbwaiter routes by it.
+{$SITE_DOMAINS} {
+	reverse_proxy dumbwaiter:8080 {
+		# Retry while dumbwaiter restarts instead of answering 502 at once.
+		lb_try_duration 5s
+	}
+}

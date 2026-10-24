@@ -1,0 +1,17 @@
+# dumbwaiter behind Caddy (compose.yaml): plain HTTP on :8080, Caddy holds
+# the certificates. Full reference: config.example.yaml in the repository root.
+server:
+  # How long to keep serving after SIGTERM. A single host has no load
+  # balancer to wait for, the default 5s only slows down restarts.
+  shutdown_delay: 1s
+
+s3:
+  endpoint: https://storage.yandexcloud.net
+  region: ru-central1
+  access_key_id: ${S3_ACCESS_KEY_ID}
+  secret_access_key: ${S3_SECRET_ACCESS_KEY}
+
+sites:
+  - hosts: [example.com, www.example.com]
+    bucket: example-com
+    not_found: 404.html
