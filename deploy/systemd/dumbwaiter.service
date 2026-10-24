@@ -1,0 +1,66 @@
+# /etc/systemd/system/dumbwaiter.service
+#
+# dumbwaiter as a native service. Expects:
+#   /usr/local/bin/dumbwaiter          the binary (make build, GOOS=linux)
+#   /etc/dumbwaiter/config.yaml        readable by the dumbwaiter group
+#   /etc/dumbwaiter/dumbwaiter.env     optional, S3 keys, root-only
+#   the dumbwaiter user                from sysusers.conf
+#
+# Logs go to the journal: journalctl -u dumbwaiter -f
+
+[Unit]
+Description=dumbwaiter, static sites from S3
+Documentation=https://github.com/jtprogru/dumbwaiter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=dumbwaiter
+Group=dumbwaiter
+# Read by systemd as root before dropping privileges, so the file can stay
+# 0600 root. Missing file is fine for a public bucket: then the config must
+# not reference ${S3_...}, or the start fails with a clear error.
+EnvironmentFile=-/etc/dumbwaiter/dumbwaiter.env
+ExecStart=/usr/local/bin/dumbwaiter -config /etc/dumbwaiter/config.yaml
+Restart=on-failure
+RestartSec=2s
+# SIGTERM starts a graceful shutdown: shutdown_delay + shutdown_timeout from
+# the config, plus a margin.
+TimeoutStopSec=40s
+LimitNOFILE=65536
+
+# Ports 80 and 443 without root. Nothing else.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+
+# The process only reads its config and certificates and talks to the network.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# EPERM instead of SIGSYS: the Go runtime tolerates a refused setrlimit.
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
