@@ -1,0 +1,275 @@
+# CI for every push to main and every pull request. release.yaml calls this
+# workflow on the tagged commit before it publishes anything.
+#
+# Jobs call Makefile targets wherever one exists, so `make ci-full` locally
+# and a green run here check the same things.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    # Explicit bash turns on -o pipefail.
+    shell: bash
+
+env:
+  # Build with the Go from setup-go, never with a toolchain fetched for go.mod.
+  GOTOOLCHAIN: local
+  # The README documents the chart against Helm 4. Same pin in release.yaml.
+  HELM_VERSION: v4.3.1
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        id: go
+        with:
+          go-version: stable
+
+      # golangci-lint and govulncheck are built into ./bin at the versions
+      # pinned in the Makefile. The Go version is in the key because
+      # golangci-lint refuses code for a newer Go than it was built with.
+      - name: Cache pinned tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: bin
+          key: tools-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-${{ hashFiles('Makefile') }}
+
+      - name: gofmt and go mod tidy
+        run: make fmt-check tidy-check
+
+      - name: golangci-lint
+        run: make lint
+
+      # Checks the workflows themselves, shellcheck included for run: blocks.
+      - name: actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+  test:
+    name: Test (${{ matrix.os }}, Go ${{ matrix.go }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Production runs on linux/amd64 and linux/arm64, development on macOS.
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        go: [stable]
+        include:
+          # The previous Go release, still supported upstream and by go.mod.
+          - os: ubuntu-latest
+            go: oldstable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ matrix.go }}
+
+      - name: Race tests
+        run: make test-race GOTEST_FLAGS=
+
+      - name: Coverage summary
+        if: matrix.os == 'ubuntu-latest' && matrix.go == 'stable'
+        run: |
+          total=$(go tool cover -func=cover.out | awk 'END { print $NF }')
+          {
+            echo "### Coverage: $total"
+            echo
+            echo '<details><summary>By function</summary>'
+            echo
+            echo '```'
+            go tool cover -func=cover.out
+            echo '```'
+            echo
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage profile
+        if: matrix.os == 'ubuntu-latest' && matrix.go == 'stable'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage
+          path: cover.out
+          retention-days: 14
+
+  configs:
+    name: Configs, manifests, chart, compose
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      # kubectl and docker compose come with the runner image.
+      - name: Validate every committed config, overlay, chart and compose file
+        run: make check-configs manifests helm-lint compose-config
+
+      - name: Upload rendered manifests
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: manifests
+          path: dist/manifests/
+          retention-days: 7
+
+  release-dry-run:
+    name: Release dry run
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          # Same as a real release: no caches near GoReleaser. This workflow
+          # also runs inside release.yaml.
+          cache: false
+
+      - name: Install syft for SBOMs
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+
+      # The same .goreleaser.yaml as a real release, minus publishing.
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean
+
+      - name: Upload snapshot archives
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snapshot
+          path: |
+            dist/release/*.tar.gz
+            dist/release/*.sbom.json
+            dist/release/checksums.txt
+          retention-days: 7
+
+  docker:
+    name: Image (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Native runners for both release platforms: each image is not only
+        # built but started.
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Tags for git describe.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # As in the Makefile: git describe without the "v" of the tag.
+      - name: Version
+        id: version
+        run: |
+          version=$(git describe --tags --always --dirty)
+          echo "version=${version#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: dumbwaiter:ci
+          build-args: VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
+
+      # Nothing here talks to S3: the admin endpoints do not need it, and the
+      # proxy answers 405 and 404 before it looks for a bucket.
+      - name: Smoke test
+        env:
+          IMAGE: dumbwaiter:ci
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          s3=(-e S3_ACCESS_KEY_ID=placeholder -e S3_SECRET_ACCESS_KEY=placeholder)
+
+          got=$(docker run --rm "$IMAGE" -version)
+          [ "$got" = "$VERSION" ] || fail "-version printed '$got', want '$VERSION'"
+
+          docker run --rm "${s3[@]}" \
+            -v "$PWD/config.example.yaml:/etc/dumbwaiter/config.yaml:ro" \
+            "$IMAGE" -check
+
+          # The compose config: plain HTTP on :8080, admin on :9090.
+          docker run -d --name dumbwaiter "${s3[@]}" \
+            -p 127.0.0.1:8080:8080 -p 127.0.0.1:9090:9090 \
+            -v "$PWD/deploy/compose/config.yaml:/etc/dumbwaiter/config.yaml:ro" \
+            "$IMAGE" >/dev/null
+          trap 'docker logs dumbwaiter; docker rm -f dumbwaiter >/dev/null' EXIT
+
+          for _ in $(seq 20); do
+            curl -fsS http://127.0.0.1:9090/readyz >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:9090/readyz
+          curl -fsS http://127.0.0.1:9090/healthz
+          curl -fsS http://127.0.0.1:9090/metrics | grep -F "dumbwaiter_build_info{version=\"$VERSION\""
+
+          expect() { # status method host
+            got=$(curl -s -o /dev/null -w '%{http_code}' -X "$2" -H "Host: $3" http://127.0.0.1:8080/)
+            [ "$got" = "$1" ] || fail "$2 with Host $3: got $got, want $1"
+          }
+          expect 405 POST example.com
+          expect 404 GET unknown.invalid
+
+          # SIGTERM has to end in a graceful shutdown with exit code 0.
+          docker stop dumbwaiter >/dev/null
+          code=$(docker inspect -f '{{.State.ExitCode}}' dumbwaiter)
+          [ "$code" = 0 ] || fail "exit code $code after SIGTERM"
