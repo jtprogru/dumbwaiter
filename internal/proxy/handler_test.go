@@ -16,6 +16,7 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 
 	"github.com/jtprogru/dumbwaiter/internal/config"
+	"github.com/jtprogru/dumbwaiter/internal/metrics"
 )
 
 // fakeS3 serves objects by "/bucket/key" in path style. It relies on
@@ -149,7 +150,7 @@ func newTestHandler(t *testing.T, fake *fakeS3, site config.Site) *Handler {
 		storage.AccessKeyID = fake.creds.AccessKeyID
 		storage.SecretAccessKey = fake.creds.SecretAccessKey
 	}
-	h, err := New(&config.Config{S3: storage, Sites: []config.Site{site}}, slog.New(slog.DiscardHandler))
+	h, err := New(&config.Config{S3: storage, Sites: []config.Site{site}}, metrics.New(), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}

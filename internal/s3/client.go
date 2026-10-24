@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 
 	"github.com/jtprogru/dumbwaiter/internal/config"
+	"github.com/jtprogru/dumbwaiter/internal/metrics"
 )
 
 // SHA-256 of an empty payload. GET and HEAD never carry a body.
@@ -30,9 +32,10 @@ type Client struct {
 	creds     *aws.Credentials
 	signer    *v4.Signer
 	http      *http.Client
+	metrics   *metrics.Metrics
 }
 
-func New(cfg config.S3) (*Client, error) {
+func New(cfg config.S3, m *metrics.Metrics) (*Client, error) {
 	u, err := url.Parse(cfg.Endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("parse s3 endpoint: %w", err)
@@ -60,6 +63,7 @@ func New(cfg config.S3) (*Client, error) {
 		region:    cfg.Region,
 		pathStyle: cfg.PathStyle,
 		signer:    v4.NewSigner(),
+		metrics:   m,
 		http: &http.Client{
 			Transport: transport,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -99,7 +103,25 @@ func (c *Client) Do(ctx context.Context, method, bucket, key string, hdr http.He
 		}
 	}
 
-	return c.http.Do(req)
+	start := time.Now()
+	resp, err := c.http.Do(req)
+	c.metrics.S3Request(bucket, method, resultCode(ctx, resp, err), time.Since(start))
+	return resp, err
+}
+
+// resultCode is the code label of a request: the response status, or why
+// there is no response.
+func resultCode(ctx context.Context, resp *http.Response, err error) string {
+	var ne net.Error
+	switch {
+	case err == nil:
+		return strconv.Itoa(resp.StatusCode)
+	case ctx.Err() != nil:
+		return metrics.S3Canceled
+	case errors.As(err, &ne) && ne.Timeout():
+		return metrics.S3Timeout
+	}
+	return metrics.S3Error
 }
 
 func (c *Client) objectURL(bucket, key string) string {

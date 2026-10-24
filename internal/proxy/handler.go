@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/jtprogru/dumbwaiter/internal/config"
+	"github.com/jtprogru/dumbwaiter/internal/metrics"
 	"github.com/jtprogru/dumbwaiter/internal/s3"
 )
 
@@ -60,7 +61,7 @@ type site struct {
 	log     *slog.Logger
 }
 
-func New(cfg *config.Config, log *slog.Logger) (*Handler, error) {
+func New(cfg *config.Config, m *metrics.Metrics, log *slog.Logger) (*Handler, error) {
 	clients := map[config.S3]*s3.Client{}
 	h := &Handler{sites: map[string]*site{}}
 
@@ -69,7 +70,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Handler, error) {
 		client, ok := clients[storage]
 		if !ok {
 			var err error
-			if client, err = s3.New(storage); err != nil {
+			if client, err = s3.New(storage, m); err != nil {
 				return nil, err
 			}
 			clients[storage] = client

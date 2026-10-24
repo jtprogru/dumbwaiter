@@ -52,7 +52,7 @@ func run() error {
 	m := metrics.New()
 	m.BuildInfo(version)
 
-	sites, err := proxy.New(cfg, log)
+	sites, err := proxy.New(cfg, m, log)
 	if err != nil {
 		return err
 	}

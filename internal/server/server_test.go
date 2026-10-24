@@ -53,7 +53,7 @@ sites: [{hosts: [example.com], bucket: site}]
 	log := slog.New(slog.DiscardHandler)
 	m := metrics.New()
 	m.BuildInfo("test")
-	sites, err := proxy.New(cfg, log)
+	sites, err := proxy.New(cfg, m, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,6 +140,8 @@ sites: [{hosts: [example.com], bucket: site}]
 			`dumbwaiter_http_request_duration_seconds_count{listener="https",host="example.com"} 1`,
 			`dumbwaiter_http_response_bytes_total{listener="https",host="example.com"} 5`,
 			`dumbwaiter_http_requests_in_flight{listener="https"} 0`,
+			`dumbwaiter_s3_requests_total{bucket="site",method="GET",code="200"} 2`,
+			`dumbwaiter_s3_request_duration_seconds_count{bucket="site",method="GET"} 2`,
 			`dumbwaiter_build_info{version="test",goversion="` + runtime.Version() + `"} 1`,
 			"\ngo_goroutines ",
 		} {
