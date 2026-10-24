@@ -1,0 +1,12 @@
+# Every way to get the proxy scraped at once.
+s3:
+  existingSecret: dumbwaiter-s3
+
+metrics:
+  scrapeAnnotations: true
+  podMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack
+  vmPodScrape:
+    enabled: true

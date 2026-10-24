@@ -134,6 +134,25 @@ tls:
     # provider-specific annotations.
     separateUDP: false
 
+# Prometheus metrics at /metrics on the admin port. Enable whatever your
+# monitoring discovers targets with.
+metrics:
+  # prometheus.io/scrape, port and path pod annotations, for Prometheus or
+  # vmagent with annotation-based kubernetes_sd relabeling.
+  scrapeAnnotations: false
+  # Prometheus Operator PodMonitor. VictoriaMetrics Operator converts it into a
+  # VMPodScrape too, as long as the monitoring.coreos.com CRDs are installed.
+  podMonitor:
+    enabled: false
+    # E.g. the release label a Prometheus selects monitors by.
+    labels: {}
+    interval: 30s
+  # VMPodScrape for VictoriaMetrics Operator without the Prometheus CRDs.
+  vmPodScrape:
+    enabled: false
+    labels: {}
+    interval: 30s
+
 # shutdown_delay + shutdown_timeout from config, plus a margin.
 terminationGracePeriodSeconds: 40
 

@@ -109,6 +109,19 @@ they cannot drift apart.
 {{- toYaml $cfg }}
 {{- end }}
 
+{{/* Spec of PodMonitor and VMPodScrape, the two CRDs use the same fields here. */}}
+{{- define "dumbwaiter.podScrapeSpec" -}}
+podMetricsEndpoints:
+  - port: admin
+    path: /metrics
+    {{- with .interval }}
+    interval: {{ . }}
+    {{- end }}
+selector:
+  matchLabels:
+    {{- include "dumbwaiter.selectorLabels" .root | nindent 4 }}
+{{- end }}
+
 {{/* Spec fields shared by the public TCP and UDP Services. */}}
 {{- define "dumbwaiter.publicServiceSpec" -}}
 {{- $svc := .Values.tls.service -}}

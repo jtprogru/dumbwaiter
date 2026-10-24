@@ -22,6 +22,11 @@ spec:
         # The proxy has no config reload, so every change rolls the pods.
         checksum/config: {{ include "dumbwaiter.config" . | sha256sum }}
         checksum/s3: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- if .Values.metrics.scrapeAnnotations }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.containerPorts.admin | quote }}
+        prometheus.io/path: /metrics
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
