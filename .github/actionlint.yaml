@@ -1,0 +1,8 @@
+# actionlint 1.7.12 does not know the $/ self-repository syntax of uses:
+# yet: https://github.com/rhysd/actionlint/issues/711. Only that message is
+# ignored; drop this file once a release supports it.
+paths:
+  .github/workflows/*.{yml,yaml}:
+    ignore:
+      - 'reusable workflow call "\$/[^"]+" at "uses" is not following the format'
+      - 'specifying action "\$/[^"]+" in invalid format because ref is missing'

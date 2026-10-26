@@ -95,7 +95,8 @@ jobs:
   ci:
     name: CI
     needs: preflight
-    uses: ./.github/workflows/ci.yaml
+    # $/ is this repository at the running commit, the tagged one.
+    uses: $/.github/workflows/ci.yaml
     permissions:
       contents: read
 
