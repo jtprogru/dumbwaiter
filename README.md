@@ -294,14 +294,23 @@ dumbwaiter_tls_certificate_expiration_timestamp_seconds - time() < 14 * 86400
 ```bash
 make build          # бинарник в ./dist
 make ci             # golangci-lint + тесты с -race, перед push
-make ci-full        # плюс govulncheck, проверка всех конфигов, рендер overlay-ев, helm-lint и compose-config
+make ci-full        # плюс gofmt, go mod tidy, govulncheck, проверка всех конфигов, рендер overlay-ев, helm-lint и compose-config
 make helm-lint      # helm lint чарта и dumbwaiter -check для конфига, который он рендерит
 make compose-config # docker compose config для обоих вариантов
-make docker-build   # образ ghcr.io/jtprogru/dumbwaiter:<git describe>
+make docker-build   # образ ghcr.io/jtprogru/dumbwaiter:<git describe без v>
+make set-version VERSION=1.2.0  # версия в чарте, kustomize base и compose перед релизом
 make diff deploy OVERLAY=tls NAMESPACE=web
 ```
 
 golangci-lint и govulncheck ставятся в `./bin` запиненных версий при первом вызове. Makefile совместим с GNU Make 3.81, который идёт в macOS.
+
+Версия везде одна и без `v`: бинарник (`-version`, метрика `dumbwaiter_build_info`), образ, версия и `appVersion` чарта, архивы и заголовок релиза. Букву `v` несёт только git-тег `v1.2.0`, этого требуют Go-модули. Чарту `v` запрещает и сам Helm: такая версия не проходит SemVer2, и без явного `--version` Helm её не находит.
+
+## Релизы
+
+Релиз собирает `.github/workflows/release.yaml` по тегу `vX.Y.Z` на коммите из `main`. Перед тегом `make set-version VERSION=X.Y.Z` выставляет версию в файлах репозитория, иначе workflow выдаст предупреждение (артефакты всё равно получат версию из тега). Сначала прогоняется весь CI, затем публикуются архивы с бинарниками для linux и darwin, образ `ghcr.io/jtprogru/dumbwaiter:X.Y.Z` для amd64 и arm64 и чарт `oci://ghcr.io/jtprogru/charts/dumbwaiter` версии `X.Y.Z`. Release notes берутся из сообщения аннотированного тега, без него GoReleaser соберёт их из коммитов. Релиз вручную создавать не нужно, его делает workflow.
+
+У каждого артефакта есть подписанная attestation, образ и чарт дополнительно подписаны cosign. Команды проверки есть в описании каждого релиза.
 
 Образ собирается на `golang:1.27` и запускается на `gcr.io/distroless/static-debian12:nonroot`. Порты: 8080 (HTTP), 8443/TCP и 8443/UDP (HTTPS и HTTP/3), 9090 (admin).
 

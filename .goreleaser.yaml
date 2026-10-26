@@ -1,0 +1,145 @@
+# GoReleaser builds the binaries, archives, checksums and SBOMs for a GitHub
+# release. The container image and the Helm chart are built by
+# .github/workflows/release.yaml, from the same Dockerfile `make docker-push`
+# uses.
+#
+#   goreleaser check                                   # validate this file
+#   goreleaser release --snapshot --clean --skip=sbom  # local dry run, no syft needed
+version: 2
+
+project_name: dumbwaiter
+
+# make build writes to dist/ too; --clean wipes only this subdirectory.
+dist: dist/release
+
+builds:
+  - id: dumbwaiter
+    main: ./cmd/dumbwaiter
+    binary: dumbwaiter
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    # .Summary is `git describe --tags --always --dirty`. Without the "v" it is
+    # the same string the Makefile and the image put into main.version, and
+    # on a release it equals .Version: 1.2.0 for the tag v1.2.0.
+    ldflags:
+      - -s -w -X main.version={{ trimprefix .Summary "v" }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    # Reproducible builds: the binary mtime comes from the commit, not the clock.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: dumbwaiter
+    formats:
+      - tar.gz
+    # The version in the name is what the binary inside prints.
+    name_template: '{{ .ProjectName }}_{{ trimprefix .Summary "v" }}_{{ .Os }}_{{ .Arch }}'
+    wrap_in_directory: true
+    # Paths are kept, so the systemd install steps from the README work from
+    # the unpacked directory as they do from a clone.
+    files:
+      - src: LICENSE
+        info: &commit-mtime
+          owner: root
+          group: root
+          mtime: "{{ .CommitDate }}"
+      - src: README.md
+        info: *commit-mtime
+      - src: config.example.yaml
+        info: *commit-mtime
+      - src: deploy/systemd/*
+        info: *commit-mtime
+      - src: deploy/host/*
+        info: *commit-mtime
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# An SPDX SBOM next to every archive. Needs syft in PATH.
+sboms:
+  - artifacts: archive
+
+# Used only when the tag carries no changelog. The workflow passes the message
+# of an annotated tag (git-release-tag writes the changelog there) as
+# --release-notes, and then this section is skipped.
+changelog:
+  use: github
+  sort: asc
+  abbrev: 7
+  filters:
+    exclude:
+      # Without "!": a breaking change of any type still makes it in.
+      - '^.*?(test|ci|chore|style)(\([[:word:]-]+\))??:.+$'
+      - "^.*?Merge (pull request|branch)"
+  groups:
+    - title: Breaking changes
+      regexp: '^.*?[[:word:]]+(\([[:word:]-]+\))??!:.+$'
+      order: 0
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]-]+\))??:.+$'
+      order: 1
+    - title: Fixes
+      regexp: '^.*?fix(\([[:word:]-]+\))??:.+$'
+      order: 2
+    - title: Performance
+      regexp: '^.*?perf(\([[:word:]-]+\))??:.+$'
+      order: 3
+    - title: Dependencies
+      regexp: '^.*?build\(deps\):.+$'
+      order: 4
+    - title: Other
+      order: 999
+
+release:
+  # The workflow publishes the draft once the image and the chart are pushed
+  # too, so a release never shows up half-empty. That also keeps it working
+  # with immutable releases, which refuse assets after publishing.
+  draft: true
+  replace_existing_draft: true
+  replace_existing_artifacts: true
+  # v1.2.0-rc.1 and the like are marked as pre-releases.
+  prerelease: auto
+  # The same version as the binary, the image and the chart. Only the git tag
+  # has the "v".
+  name_template: "{{ .Version }}"
+  footer: |
+    ## Install
+
+    Container image (linux/amd64, linux/arm64):
+
+    ```bash
+    docker pull ghcr.io/jtprogru/dumbwaiter:{{ .Version }}
+    ```
+
+    Helm chart:
+
+    ```bash
+    helm upgrade --install dumbwaiter oci://ghcr.io/jtprogru/charts/dumbwaiter --version {{ .Version }} -n web -f my-values.yaml
+    ```
+
+    The archives hold a static binary plus the systemd unit and configs, see the README.
+
+    ## Verify
+
+    Every artifact has a signed build provenance attestation:
+
+    ```bash
+    gh attestation verify dumbwaiter_{{ .Version }}_linux_amd64.tar.gz -R jtprogru/dumbwaiter
+    gh attestation verify oci://ghcr.io/jtprogru/dumbwaiter:{{ .Version }} -R jtprogru/dumbwaiter
+    gh attestation verify oci://ghcr.io/jtprogru/charts/dumbwaiter:{{ .Version }} -R jtprogru/dumbwaiter
+    ```
+
+    The image and the chart are also signed with cosign, keyless:
+
+    ```bash
+    cosign verify ghcr.io/jtprogru/dumbwaiter:{{ .Version }} \
+      --certificate-identity-regexp '^https://github\.com/jtprogru/dumbwaiter/\.github/workflows/release\.yaml@refs/tags/v' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    ```

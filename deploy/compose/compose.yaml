@@ -19,7 +19,7 @@ x-logging: &logging
 
 services:
   dumbwaiter:
-    image: ${DUMBWAITER_IMAGE:-ghcr.io/jtprogru/dumbwaiter}:${DUMBWAITER_TAG:-v0.1.0}
+    image: ${DUMBWAITER_IMAGE:-ghcr.io/jtprogru/dumbwaiter}:${DUMBWAITER_TAG:-0.1.0}
     restart: unless-stopped
     command: ["-config", "/etc/dumbwaiter/config.yaml"]
     environment:

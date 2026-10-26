@@ -1,0 +1,345 @@
+# Release pipeline, started by pushing a semver tag: v1.2.3 or v1.2.3-rc.1.
+#
+# The tag v1.2.3 gives version 1.2.3 to everything it publishes: the binary
+# (-version, build_info), the archives, the release title, the image tag, the
+# chart version and appVersion. The "v" stays in the git tag only: Go modules
+# need it there, Helm rejects it in a chart version.
+#
+#   preflight  tag format, tagged commit on main, stale versions in the repo
+#   ci         the whole CI workflow on the tagged commit
+#   binaries   GoReleaser: archives, checksums, SBOMs, a draft GitHub release
+#   image      linux/amd64 + linux/arm64 image on GHCR, cosign signature
+#   chart      Helm chart on GHCR as OCI, cosign signature, .tgz on the release
+#   publish    turns the draft into a release once all of the above is done
+#
+# Release notes are the message of the annotated tag, where git-release-tag
+# puts the changelog. For a lightweight tag or a one-line message GoReleaser
+# writes them from commits.
+# Do not create the release by hand: the workflow makes it.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GOTOOLCHAIN: local
+  # Same pin as in ci.yaml.
+  HELM_VERSION: v4.3.1
+  IMAGE: ghcr.io/${{ github.repository }}
+  CHART_REPO: ghcr.io/${{ github.repository_owner }}/charts
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the tag
+        id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'
+          if ! [[ $TAG =~ $semver ]]; then
+            echo "::error::$TAG is not a semver tag like v1.2.3 or v1.2.3-rc.1"
+            exit 1
+          fi
+          # Tags go on commits that already passed CI on main.
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$TAG points at $GITHUB_SHA, which is not on main"
+            exit 1
+          fi
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      # Published artifacts take the version from the tag in any case. These
+      # files matter to whoever uses the repository at this tag directly:
+      # a kustomize remote base, docker compose, helm install from a clone.
+      # `make set-version` pins all of them.
+      - name: Look for stale versions in the repository
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          stale() { echo "::warning file=$1,title=Stale version::$1 does not pin $VERSION, run make set-version VERSION=$VERSION before tagging"; }
+          chart=deploy/helm/dumbwaiter/Chart.yaml
+          kustomization=deploy/kubernetes/base/kustomization.yaml
+          grep -qxF "version: $VERSION" "$chart" || stale "$chart"
+          grep -qxF "appVersion: \"$VERSION\"" "$chart" || stale "$chart"
+          grep -qF "newTag: \"$VERSION\"" "$kustomization" || stale "$kustomization"
+          for f in deploy/compose/compose.yaml deploy/compose/compose.tls.yaml; do
+            grep -qF "DUMBWAITER_TAG:-$VERSION}" "$f" || stale "$f"
+          done
+          grep -qxF "DUMBWAITER_TAG=$VERSION" deploy/compose/.env.example || stale deploy/compose/.env.example
+
+  ci:
+    name: CI
+    needs: preflight
+    # $/ is this repository at the running commit, the tagged one.
+    uses: $/.github/workflows/ci.yaml
+    permissions:
+      contents: read
+
+  binaries:
+    name: Binaries
+    needs: [preflight, ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # the draft release and its assets
+      id-token: write # Sigstore certificate for the attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          # Nothing restored from a cache goes into a release.
+          cache: false
+
+      - name: Install syft for SBOMs
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+
+      - name: Release notes from the tag annotation
+        id: notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          if [ "$(git cat-file -t "$TAG")" = tag ]; then
+            # The whole message as stored, without the tag object headers and
+            # the PGP, SSH or x509 signature block. Subject and body are not
+            # split: in a message made with the default --cleanup=strip the
+            # "## ..." lines are gone and the subject is a changelog entry.
+            git cat-file tag "$TAG" \
+              | sed '1,/^$/d' \
+              | sed -E '/^-----BEGIN (PGP SIGNATURE|SSH SIGNATURE|SIGNED MESSAGE)-----$/,$d' \
+              > "$notes"
+          fi
+          # A single line like "v1.2.0" is a label, not a changelog.
+          if [ -f "$notes" ] && [ "$(grep -c '[^[:space:]]' "$notes")" -gt 1 ]; then
+            echo "args=--release-notes=$notes" >> "$GITHUB_OUTPUT"
+          else
+            echo "$TAG has no changelog in its message, GoReleaser writes one from commits"
+          fi
+
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          version: "~> v2"
+          args: release --clean ${{ steps.notes.outputs.args }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # One attestation for every file in checksums.txt: archives and SBOMs.
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/release/checksums.txt
+
+  image:
+    name: Container image
+    needs: [preflight, ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write # push to GHCR
+      id-token: write # keyless cosign and the attestation
+      attestations: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The build stage cross-compiles on the runner's platform and the final
+      # stage only copies files, so no QEMU is needed for arm64.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 1.2.3, 1.2, 1 and latest; a pre-release gets only its own tag.
+      # No 0 tag: before 1.0 a minor bump may break things.
+      - name: Image tags and labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref_name, 'v0.') }}
+          labels: |
+            org.opencontainers.image.title=dumbwaiter
+            org.opencontainers.image.description=Reverse proxy that serves static sites from S3-compatible storage
+          annotations: |
+            org.opencontainers.image.title=dumbwaiter
+            org.opencontainers.image.description=Reverse proxy that serves static sites from S3-compatible storage
+
+      # No build cache in the release path: what ships is built from scratch.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: VERSION=${{ needs.preflight.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          # SBOM and SLSA provenance attached to the image index by BuildKit.
+          sbom: true
+          provenance: mode=max
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign with cosign
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "$IMAGE@$DIGEST"
+
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          # Storage records exist only for organization-owned repositories.
+          create-storage-record: false
+
+  chart:
+    name: Helm chart
+    # binaries creates the draft release the .tgz is attached to.
+    needs: [preflight, ci, binaries]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # attach the .tgz to the draft release
+      packages: write # push to GHCR
+      id-token: write # keyless cosign and the attestations
+      attestations: write
+    env:
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      # The chart is versioned with the app: chart 1.2.3 runs image 1.2.3.
+      # Chart.yaml in the repository is not rewritten.
+      - name: Package
+        run: helm package deploy/helm/dumbwaiter --version "$VERSION" --app-version "$VERSION" --destination dist/chart
+
+      # cosign and the attestation read the docker credentials, helm push
+      # reads its own.
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push to GHCR
+        id: push
+        env:
+          ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          helm registry login ghcr.io --username "$ACTOR" --password-stdin <<< "$GITHUB_TOKEN"
+          helm push "dist/chart/dumbwaiter-$VERSION.tgz" "oci://$CHART_REPO" 2>&1 | tee "$RUNNER_TEMP/helm-push.log"
+          digest=$(sed -n 's/^Digest: //p' "$RUNNER_TEMP/helm-push.log")
+          if [ -z "$digest" ]; then
+            echo "::error::no digest in the helm push output"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Flux and Kyverno can check this signature before installing the chart.
+      - name: Sign with cosign
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "$CHART_REPO/dumbwaiter@$DIGEST"
+
+      - name: Attest the OCI chart
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.CHART_REPO }}/dumbwaiter
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest the .tgz
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/chart/dumbwaiter-*.tgz
+
+      - name: Attach to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$TAG" "dist/chart/dumbwaiter-$VERSION.tgz" --clobber
+
+  publish:
+    name: Publish
+    needs: [preflight, binaries, image, chart]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # undraft the release
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          id=$(gh release view "$TAG" --json databaseId --jq .databaseId)
+          # "legacy" gives Latest to the highest semver, so a backported
+          # v1.2.4 published after v1.3.0 does not take it over. GoReleaser
+          # already marked a pre-release as such, and those never get Latest.
+          url=$(gh api --method PATCH "repos/$GH_REPO/releases/$id" -F draft=false -f make_latest=legacy --jq .html_url)
+          {
+            echo "### $VERSION is out"
+            echo
+            echo "- Release: $url"
+            echo "- Image: \`$IMAGE:$VERSION\`, digest \`$DIGEST\`"
+            echo "- Chart: \`helm install dumbwaiter oci://$CHART_REPO/dumbwaiter --version $VERSION\`"
+          } >> "$GITHUB_STEP_SUMMARY"

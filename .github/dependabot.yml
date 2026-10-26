@@ -1,0 +1,65 @@
+# Weekly updates for Go modules, GitHub Actions and base images.
+#
+# Commit prefixes follow the repository's Conventional Commits: build(deps)
+# for what ends up in the binary or the image, ci(deps) for workflows. The
+# cooldown keeps a freshly published, possibly compromised version out for a
+# few days.
+#
+# Not covered, bump by hand: golangci-lint and govulncheck in the Makefile,
+# HELM_VERSION in ci.yaml and release.yaml.
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-patch-days: 3
+    groups:
+      go-modules:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: build
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+      include: scope
+
+  # golang and distroless in the Dockerfile.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build
+      include: scope
+
+  # Caddy in deploy/compose/compose.yaml.
+  - package-ecosystem: docker-compose
+    directory: /deploy/compose
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build
+      include: scope
