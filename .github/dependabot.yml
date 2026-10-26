@@ -40,7 +40,8 @@ updates:
       prefix: ci
       include: scope
 
-  # golang and distroless in the Dockerfile.
+  # golang and distroless in the Dockerfile, pinned by digest. Dependabot
+  # also picks up a rebuilt image under the same tag.
   - package-ecosystem: docker
     directory: /
     schedule:
