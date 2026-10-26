@@ -312,7 +312,7 @@ golangci-lint и govulncheck ставятся в `./bin` запиненных в
 
 У каждого артефакта есть подписанная attestation, образ и чарт дополнительно подписаны cosign. Команды проверки есть в описании каждого релиза.
 
-Образ собирается на `golang:1.27` и запускается на `gcr.io/distroless/static-debian12:nonroot`. Порты: 8080 (HTTP), 8443/TCP и 8443/UDP (HTTPS и HTTP/3), 9090 (admin).
+Образ собирается на `golang:1.27` и запускается на `gcr.io/distroless/static-debian12:nonroot`, оба закреплены по digest, а обновляет их Dependabot. Порты: 8080 (HTTP), 8443/TCP и 8443/UDP (HTTPS и HTTP/3), 9090 (admin).
 
 ## Чего нет и не планируется
 
