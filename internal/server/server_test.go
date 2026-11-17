@@ -411,19 +411,65 @@ func TestHTTP3StreamLimit(t *testing.T) {
 	}
 }
 
-// The write deadline is refreshed on every write, so a client that reads
-// slowly but steadily must get the whole file: only a stalled reader is cut.
-// An absolute write timeout would truncate this download.
-func TestSlowButProgressingClientGetsFullBody(t *testing.T) {
-	const size = 4 << 20
-	body := strings.Repeat("x", size)
+// deadlineWriter records the write deadlines the recorder sets.
+type deadlineWriter struct {
+	header    http.Header
+	deadlines []time.Time
+}
+
+func (w *deadlineWriter) Header() http.Header         { return w.header }
+func (w *deadlineWriter) WriteHeader(int)             {}
+func (w *deadlineWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+func (w *deadlineWriter) SetWriteDeadline(t time.Time) error {
+	w.deadlines = append(w.deadlines, t)
+	return nil
+}
+
+// The deadline must be refreshed on every write. Refreshing it once, as an
+// absolute write timeout would, kills long downloads that keep progressing.
+func TestRecorderRefreshesWriteDeadline(t *testing.T) {
+	w := &deadlineWriter{header: http.Header{}}
+	rec := &recorder{ResponseWriter: w, writeIdle: 50 * time.Millisecond}
+
+	if _, err := rec.Write([]byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if _, err := rec.Write([]byte("second")); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(w.deadlines) != 2 {
+		t.Fatalf("deadlines set %d times, want one per write", len(w.deadlines))
+	}
+	if !w.deadlines[1].After(w.deadlines[0]) {
+		t.Fatalf("second deadline %v is not after the first %v", w.deadlines[1], w.deadlines[0])
+	}
+}
+
+// A response that takes longer than write_idle_timeout must still arrive in
+// full when data keeps flowing. The slow part is the upstream, not the socket:
+// gaps between writes stay tiny while the whole transfer dwarfes the deadline,
+// so a per-request absolute deadline would truncate it and an idle one does
+// not.
+func TestSlowButProgressingResponseCompletes(t *testing.T) {
+	const (
+		chunks = 100
+		chunk  = 16 << 10
+	)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-		io.WriteString(w, body)
+		w.Header().Set("Content-Length", strconv.Itoa(chunks*chunk))
+		w.WriteHeader(http.StatusOK)
+		for range chunks {
+			io.WriteString(w, strings.Repeat("x", chunk))
+			w.(http.Flusher).Flush()
+			time.Sleep(5 * time.Millisecond)
+		}
 	}))
 	defer upstream.Close()
 
-	// write_idle_timeout is 50ms here, the transfer takes far longer.
+	// write_idle_timeout is 50ms, the transfer takes about 500ms.
 	cfg := reviewConfig(t, upstream.URL)
 	m := metrics.New()
 	log := slog.New(slog.DiscardHandler)
@@ -448,50 +494,15 @@ func TestSlowButProgressingClientGetsFullBody(t *testing.T) {
 	}()
 	waitReady(t, "http://"+srv.AdminAddr()+"/readyz")
 
-	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", srv.HTTPAddr())
-	if err != nil {
-		t.Fatal(err)
+	start := time.Now()
+	res := do(t, http.DefaultClient, http.MethodGet, "http://"+srv.HTTPAddr()+"/")
+	if res.status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.status)
 	}
-	defer conn.Close()
-	conn.(*net.TCPConn).SetReadBuffer(32 << 10)
-	if _, err := fmt.Fprint(conn, "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"); err != nil {
-		t.Fatal(err)
+	if want := chunks * chunk; len(res.body) != want {
+		t.Fatalf("got %d bytes, want %d: the response was cut short", len(res.body), want)
 	}
-	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-
-	br := bufio.NewReader(conn)
-	length := -1
-	for {
-		line, err := br.ReadString('\n')
-		if err != nil {
-			t.Fatalf("response headers: %v", err)
-		}
-		if line == "\r\n" {
-			break
-		}
-		if v, ok := strings.CutPrefix(line, "Content-Length: "); ok {
-			length, err = strconv.Atoi(strings.TrimSpace(v))
-			if err != nil {
-				t.Fatalf("Content-Length %q: %v", v, err)
-			}
-		}
-	}
-	if length != size {
-		t.Fatalf("Content-Length = %d, want %d", length, size)
-	}
-
-	buf := make([]byte, 32<<10)
-	read := 0
-	for read < length {
-		n, err := br.Read(buf[:min(len(buf), length-read)])
-		read += n
-		if err != nil {
-			t.Fatalf("download stopped after %d of %d bytes: %v", read, length, err)
-		}
-		// Slower than the server would like, faster than the idle deadline.
-		time.Sleep(2 * time.Millisecond)
-	}
-	if read != size {
-		t.Fatalf("got %d bytes, want %d", read, size)
+	if elapsed := time.Since(start); elapsed < 200*time.Millisecond {
+		t.Fatalf("transfer took %v, too fast to exceed write_idle_timeout", elapsed)
 	}
 }
