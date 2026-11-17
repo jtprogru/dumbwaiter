@@ -189,3 +189,73 @@ func TestNormalizeHost(t *testing.T) {
 		}
 	}
 }
+
+func TestTimeoutDefaults(t *testing.T) {
+	cfg, err := Parse([]byte(`
+server:
+  https:
+    certificates: [{cert: /tls/tls.crt, key: /tls/tls.key}]
+s3: {endpoint: "http://minio:9000"}
+sites: [{hosts: [a.test], bucket: a}]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := cfg.Server
+	if s.ReadTimeout != 30*time.Second || s.WriteIdleTimeout != 30*time.Second {
+		t.Errorf("read/write timeouts: %+v", s)
+	}
+	h := s.HTTPS
+	if h.H3IdleTimeout != 30*time.Second || h.H3HandshakeIdleTimeout != 5*time.Second || h.H3MaxIncomingStreams != 100 {
+		t.Errorf("http3 defaults: %+v", h)
+	}
+	if cfg.S3.ReadTimeout != 30*time.Second {
+		t.Errorf("s3.read_timeout = %v", cfg.S3.ReadTimeout)
+	}
+}
+
+// Zero means "use the default", as for every other unset field.
+func TestZeroH3StreamsFallsBackToDefault(t *testing.T) {
+	cfg, err := Parse([]byte(`
+server:
+  https:
+    h3_max_incoming_streams: 0
+    certificates: [{cert: a, key: b}]
+s3: {endpoint: http://x}
+sites: [{hosts: [a.test], bucket: a}]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Server.HTTPS.H3MaxIncomingStreams; got != 100 {
+		t.Errorf("h3_max_incoming_streams = %d, want the default 100", got)
+	}
+}
+
+func TestTimeoutValidation(t *testing.T) {
+	tests := map[string]struct {
+		yaml string
+		want string
+	}{
+		"negative read timeout": {
+			yaml: "server: {read_timeout: -1s}\ns3: {endpoint: http://x}\nsites: [{hosts: [a.test], bucket: a}]",
+			want: "server.read_timeout: must not be negative",
+		},
+		"negative write idle": {
+			yaml: "server: {write_idle_timeout: -1s}\ns3: {endpoint: http://x}\nsites: [{hosts: [a.test], bucket: a}]",
+			want: "server.write_idle_timeout: must not be negative",
+		},
+		"negative s3 read timeout": {
+			yaml: "s3: {endpoint: http://x, read_timeout: -1s}\nsites: [{hosts: [a.test], bucket: a}]",
+			want: "read_timeout: must not be negative",
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse([]byte(tt.yaml))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("want error containing %q, got %v", tt.want, err)
+			}
+		})
+	}
+}

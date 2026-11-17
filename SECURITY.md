@@ -28,6 +28,11 @@ Out of scope:
 - vulnerabilities in dependencies that the code does not reach, as reported by `govulncheck`;
 - load that a CDN or rate limiter in front of the proxy is expected to absorb.
 
+## Known limitations
+
+- `quic-go` has no deadline for reading request headers over HTTP/3. `h3_idle_timeout` and `h3_max_incoming_streams` bound a client that opens a stream and never finishes it, but a slow drip of pings on an otherwise idle connection is only cut when the inactivity timeout fires. With `server.https.http3` enabled, front the proxy with a rate limiter or a CDN.
+- The admin port (`/healthz`, `/readyz`, `/metrics`) has no authentication. In Kubernetes it is reachable from any pod unless `networkPolicy.enabled` (Helm) or the `NetworkPolicy` in the kustomize base restricts it.
+
 ## Verifying releases
 
 Every archive, image and chart has a signed build provenance attestation, and the image and the chart are also signed with cosign. The commands are in the notes of each release.

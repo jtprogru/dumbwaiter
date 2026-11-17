@@ -1,0 +1,27 @@
+# The admin port has no authentication: /metrics answers any pod in the
+# cluster and exposes the configured host and bucket names. Restrict it to the
+# monitoring namespace; kubelet probes come from the node and are unaffected.
+# Adjust the namespace label or replace it with a podSelector for your scraper.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dumbwaiter-admin
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: dumbwaiter
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9090
+          protocol: TCP
+    - ports:
+        - port: 8080
+          protocol: TCP
+        - port: 8443
+          protocol: TCP

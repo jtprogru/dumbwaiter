@@ -27,12 +27,27 @@ server:
         key: /etc/tls/example-com/tls.key
     # Files are reread this often, so renewed Secrets apply without restart.
     reload_interval: 1m
+    # quic-go has no deadline for reading request headers, so these two are
+    # what bounds a client that opens a stream and never finishes it.
+    # h3_idle_timeout drops a connection with no activity, the stream limit
+    # caps how many half-sent requests one connection may park.
+    h3_idle_timeout: 30s
+    h3_handshake_idle_timeout: 5s
+    h3_max_incoming_streams: 100
 
   # /healthz, /readyz and /metrics in the Prometheus text format.
   admin:
     addr: ":9090"
 
   read_header_timeout: 10s
+  # Bounds the whole request, body included, and the drain of an unread body.
+  # Without it a client that announces a body and never sends it holds a
+  # connection forever: read_header_timeout covers only the headers.
+  read_timeout: 30s
+  # Refreshed before every write to the client. A download that keeps
+  # progressing is never cut, a client that stopped reading is dropped.
+  # No absolute write timeout on purpose: it would kill large downloads.
+  write_idle_timeout: 30s
   idle_timeout: 120s
   # After SIGTERM: /readyz fails, the proxy keeps serving for shutdown_delay,
   # then waits up to shutdown_timeout for in-flight requests.
@@ -56,6 +71,9 @@ s3:
   secret_access_key: ${S3_SECRET_ACCESS_KEY}
   # Time to wait for S3 response headers.
   timeout: 30s
+  # Longest gap between two reads of the response body. Without it a storage
+  # that sends headers and then stalls holds the connection forever.
+  read_timeout: 30s
 
 sites:
   - hosts: [example.com, www.example.com]

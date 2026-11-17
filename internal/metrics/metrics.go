@@ -71,6 +71,13 @@ func (m *Metrics) S3Request(bucket, method, code string, d time.Duration) {
 	}
 }
 
+// S3AccessDeniedMasked counts 403 AccessDenied responses that the proxy turns
+// into 404. They mean a bucket policy problem or a missing s3:ListBucket
+// permission, not a missing object, so they must be visible to alerts.
+func (m *Metrics) S3AccessDeniedMasked(bucket string) {
+	m.set.GetOrCreateCounter(series("dumbwaiter_s3_access_denied_masked_total", "bucket", bucket)).Inc()
+}
+
 // HTTP records requests to one public listener: http, https or http3.
 type HTTP struct {
 	m        *Metrics

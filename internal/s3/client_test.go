@@ -2,8 +2,10 @@ package s3
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -80,5 +82,79 @@ func TestRequestMetrics(t *testing.T) {
 				t.Errorf("missing %s in\n%s", want, out.String())
 			}
 		})
+	}
+}
+
+// A storage that sends the headers and then stops writing must not hold the
+// caller forever: response-header timeouts do not cover the body.
+func TestStalledBodyTimesOut(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "10")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		// Never write the body, never end the response.
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+
+	c, err := New(config.S3{
+		Endpoint:    upstream.URL,
+		PathStyle:   true,
+		Timeout:     5 * time.Second,
+		ReadTimeout: 50 * time.Millisecond,
+	}, metrics.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Do(t.Context(), http.MethodGet, "site", "index.html", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	start := time.Now()
+	if _, err := io.ReadAll(resp.Body); err == nil {
+		t.Fatal("stalled body read returned no error")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("stalled body read took %v, want it bounded by read_timeout", elapsed)
+	}
+}
+
+// A slow but progressing body must not be cut by the idle deadline.
+func TestSlowButProgressingBodyCompletes(t *testing.T) {
+	const chunks = 5
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(chunks))
+		w.WriteHeader(http.StatusOK)
+		for range chunks {
+			time.Sleep(20 * time.Millisecond)
+			io.WriteString(w, "x")
+			w.(http.Flusher).Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	c, err := New(config.S3{
+		Endpoint:    upstream.URL,
+		PathStyle:   true,
+		Timeout:     5 * time.Second,
+		ReadTimeout: 150 * time.Millisecond,
+	}, metrics.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Do(t.Context(), http.MethodGet, "site", "slow.html", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("progressing body was cut: %v", err)
+	}
+	if len(body) != chunks {
+		t.Fatalf("body = %q, want %d bytes", body, chunks)
 	}
 }

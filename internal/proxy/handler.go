@@ -58,6 +58,7 @@ type site struct {
 	cfg     config.Site
 	store   objectStore
 	headers http.Header
+	metrics *metrics.Metrics
 	log     *slog.Logger
 }
 
@@ -75,7 +76,7 @@ func New(cfg *config.Config, m *metrics.Metrics, log *slog.Logger) (*Handler, er
 			}
 			clients[storage] = client
 		}
-		s := newSite(sc, client, log)
+		s := newSite(sc, client, m, log)
 		for _, host := range sc.Hosts {
 			h.sites[host] = s
 		}
@@ -83,7 +84,7 @@ func New(cfg *config.Config, m *metrics.Metrics, log *slog.Logger) (*Handler, er
 	return h, nil
 }
 
-func newSite(cfg config.Site, store objectStore, log *slog.Logger) *site {
+func newSite(cfg config.Site, store objectStore, m *metrics.Metrics, log *slog.Logger) *site {
 	hdr := http.Header{}
 	for k, v := range cfg.Headers {
 		hdr.Set(k, v)
@@ -92,6 +93,7 @@ func newSite(cfg config.Site, store objectStore, log *slog.Logger) *site {
 		cfg:     cfg,
 		store:   store,
 		headers: hdr,
+		metrics: m,
 		log:     log.With("bucket", cfg.Bucket),
 	}
 }
@@ -119,6 +121,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *site) serve(w http.ResponseWriter, r *http.Request) {
 	for k := range s.headers {
 		w.Header().Set(k, s.headers.Get(k))
+	}
+	// Content types come from object metadata or an extension guess, so the
+	// browser must not sniff a different one. A configured header wins.
+	if _, fromConfig := s.headers["X-Content-Type-Options"]; !fromConfig {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 	}
 
 	// path.Clean resolves "..", so a request cannot leave the site prefix.
@@ -246,7 +253,10 @@ func (s *site) fetch(w http.ResponseWriter, r *http.Request, method, key string,
 		// HEAD responses carry no body, so the code is empty there.
 		code := s3.ErrorCode(resp)
 		if code == "AccessDenied" || code == "" {
-			s.log.Debug("s3 denied access, treating as not found", "key", key, "code", code)
+			// Served as 404 so the bucket contents do not leak, but this is
+			// still a permission problem worth an alert, not a missing key.
+			s.metrics.S3AccessDeniedMasked(s.cfg.Bucket)
+			s.log.Warn("s3 denied access, serving not found", "key", key, "code", code)
 			return nil, true
 		}
 		s.log.Error("s3 rejected request", "key", key, "status", resp.StatusCode, "code", code)
