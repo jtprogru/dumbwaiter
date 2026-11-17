@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
 	"github.com/jtprogru/dumbwaiter/internal/config"
@@ -60,15 +61,17 @@ func New(ctx context.Context, cfg *config.Config, sites Sites, m *metrics.Metric
 		accessLog = log
 	}
 	observed := func(listener string, h http.Handler) http.Handler {
-		return observe(m.HTTP(listener), sites, accessLog, h)
+		return observe(m.HTTP(listener), sites, accessLog, sc.WriteIdleTimeout, h)
 	}
 	newHTTPServer := func(h http.Handler, p *http.Protocols) *http.Server {
 		return &http.Server{
 			Handler:           h,
 			Protocols:         p,
 			ReadHeaderTimeout: sc.ReadHeaderTimeout,
-			IdleTimeout:       sc.IdleTimeout,
-			ErrorLog:          errorLog,
+			// Bounds the body and the post-handler drain of an unread one.
+			ReadTimeout: sc.ReadTimeout,
+			IdleTimeout: sc.IdleTimeout,
+			ErrorLog:    errorLog,
 		}
 	}
 
@@ -98,6 +101,14 @@ func New(ctx context.Context, cfg *config.Config, sites Sites, m *metrics.Metric
 				Port:        https.PublicPort,
 				IdleTimeout: sc.IdleTimeout,
 				Logger:      log,
+				// quic-go has no ReadHeaderTimeout: a client may open a stream
+				// and never finish its HEADERS frame, so the connection
+				// settings are the only bound on that phase.
+				QUICConfig: &quic.Config{
+					HandshakeIdleTimeout: https.H3HandshakeIdleTimeout,
+					MaxIdleTimeout:       https.H3IdleTimeout,
+					MaxIncomingStreams:   https.H3MaxIncomingStreams,
+				},
 			}
 			handler = advertiseHTTP3(s.h3Srv, sites)
 		}

@@ -56,8 +56,12 @@ func (s *Store) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 	return certs[0], nil
 }
 
-// Watch rereads the files every interval until ctx is done.
+// Watch rereads the files every interval until ctx is done. A non-positive
+// interval falls back to a minute instead of panicking in time.NewTicker.
 func (s *Store) Watch(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = time.Minute
+	}
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {

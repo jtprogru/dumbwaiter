@@ -29,8 +29,17 @@ type Server struct {
 	HTTPS *HTTPS `yaml:"https"`
 	Admin Admin  `yaml:"admin"`
 
+	// ReadHeaderTimeout covers the request line and the headers only.
 	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
-	IdleTimeout       time.Duration `yaml:"idle_timeout"`
+	// ReadTimeout bounds the whole request, body included. It is what stops
+	// a client from holding a connection by announcing a body and never
+	// sending it: the body drain after the response has no other deadline.
+	ReadTimeout time.Duration `yaml:"read_timeout"`
+	// WriteIdleTimeout is refreshed before every write to the client. A
+	// download that progresses slowly is never cut, a client that stopped
+	// reading is dropped once it has read nothing for this long.
+	WriteIdleTimeout time.Duration `yaml:"write_idle_timeout"`
+	IdleTimeout      time.Duration `yaml:"idle_timeout"`
 	// ShutdownDelay is how long the pod keeps serving after SIGTERM with
 	// /readyz failing, so endpoints get updated before listeners close.
 	ShutdownDelay   time.Duration `yaml:"shutdown_delay"`
@@ -55,6 +64,14 @@ type HTTPS struct {
 	HTTP3          bool          `yaml:"http3"`
 	Certificates   []Certificate `yaml:"certificates"`
 	ReloadInterval time.Duration `yaml:"reload_interval"`
+	// H3IdleTimeout closes a QUIC connection that carries no activity.
+	// quic-go has no deadline for reading request headers, so this and
+	// H3MaxIncomingStreams are what bounds a client that opens a stream and
+	// never finishes it.
+	H3IdleTimeout          time.Duration `yaml:"h3_idle_timeout"`
+	H3HandshakeIdleTimeout time.Duration `yaml:"h3_handshake_idle_timeout"`
+	// H3MaxIncomingStreams caps concurrent request streams per connection.
+	H3MaxIncomingStreams int64 `yaml:"h3_max_incoming_streams"`
 }
 
 type Certificate struct {
@@ -78,12 +95,17 @@ func (l Log) AccessEnabled() bool { return l.Access == nil || *l.Access }
 
 // S3 is comparable on purpose: sites with equal settings share one client.
 type S3 struct {
-	Endpoint        string        `yaml:"endpoint"`
-	Region          string        `yaml:"region"`
-	PathStyle       bool          `yaml:"path_style"`
-	AccessKeyID     string        `yaml:"access_key_id"`
-	SecretAccessKey string        `yaml:"secret_access_key"`
-	Timeout         time.Duration `yaml:"timeout"`
+	Endpoint        string `yaml:"endpoint"`
+	Region          string `yaml:"region"`
+	PathStyle       bool   `yaml:"path_style"`
+	AccessKeyID     string `yaml:"access_key_id"`
+	SecretAccessKey string `yaml:"secret_access_key"`
+	// Timeout waits for the response headers.
+	Timeout time.Duration `yaml:"timeout"`
+	// ReadTimeout bounds the gap between two reads of the response body.
+	// Without it a storage that sends headers and then stalls holds the
+	// connection forever.
+	ReadTimeout time.Duration `yaml:"read_timeout"`
 }
 
 type Site struct {
@@ -198,6 +220,8 @@ func (c *Config) setDefaults() {
 	setDefault(&s.HTTP.Addr, ":8080")
 	setDefault(&s.Admin.Addr, ":9090")
 	setDefault(&s.ReadHeaderTimeout, 10*time.Second)
+	setDefault(&s.ReadTimeout, 30*time.Second)
+	setDefault(&s.WriteIdleTimeout, 30*time.Second)
 	setDefault(&s.IdleTimeout, 120*time.Second)
 	setDefault(&s.ShutdownDelay, 5*time.Second)
 	setDefault(&s.ShutdownTimeout, 30*time.Second)
@@ -205,6 +229,9 @@ func (c *Config) setDefaults() {
 		setDefault(&s.HTTPS.Addr, ":8443")
 		setDefault(&s.HTTPS.PublicPort, 443)
 		setDefault(&s.HTTPS.ReloadInterval, time.Minute)
+		setDefault(&s.HTTPS.H3IdleTimeout, 30*time.Second)
+		setDefault(&s.HTTPS.H3HandshakeIdleTimeout, 5*time.Second)
+		setDefault(&s.HTTPS.H3MaxIncomingStreams, 100)
 	}
 
 	setDefault(&c.Log.Level, "info")
@@ -232,6 +259,7 @@ func (c *Config) setDefaults() {
 func (s *S3) setDefaults() {
 	setDefault(&s.Region, "us-east-1")
 	setDefault(&s.Timeout, 30*time.Second)
+	setDefault(&s.ReadTimeout, 30*time.Second)
 	s.Endpoint = strings.TrimSuffix(s.Endpoint, "/")
 }
 
@@ -254,6 +282,21 @@ func (c *Config) validate() error {
 		if len(https.Certificates) == 0 {
 			add("server.https.certificates: at least one certificate is required")
 		}
+		if https.H3MaxIncomingStreams < 1 {
+			add("server.https.h3_max_incoming_streams: %d must be positive", https.H3MaxIncomingStreams)
+		}
+		for _, d := range []struct {
+			name string
+			val  time.Duration
+		}{
+			{"server.https.reload_interval", https.ReloadInterval},
+			{"server.https.h3_idle_timeout", https.H3IdleTimeout},
+			{"server.https.h3_handshake_idle_timeout", https.H3HandshakeIdleTimeout},
+		} {
+			if d.val < 0 {
+				add("%s: must not be negative", d.name)
+			}
+		}
 		for i, crt := range https.Certificates {
 			if crt.Cert == "" || crt.Key == "" {
 				add("server.https.certificates[%d]: both cert and key are required", i)
@@ -264,6 +307,22 @@ func (c *Config) validate() error {
 		}
 	} else if c.Server.HTTP.RedirectToHTTPS {
 		add("server.http.redirect_to_https: requires server.https")
+	}
+
+	for _, d := range []struct {
+		name string
+		val  time.Duration
+	}{
+		{"server.read_header_timeout", c.Server.ReadHeaderTimeout},
+		{"server.read_timeout", c.Server.ReadTimeout},
+		{"server.write_idle_timeout", c.Server.WriteIdleTimeout},
+		{"server.idle_timeout", c.Server.IdleTimeout},
+		{"server.shutdown_delay", c.Server.ShutdownDelay},
+		{"server.shutdown_timeout", c.Server.ShutdownTimeout},
+	} {
+		if d.val < 0 {
+			add("%s: must not be negative", d.name)
+		}
 	}
 
 	if len(c.Sites) == 0 {
@@ -319,6 +378,17 @@ func (s *S3) validate() error {
 	}
 	if (s.AccessKeyID == "") != (s.SecretAccessKey == "") {
 		return errors.New("access_key_id and secret_access_key must be set together")
+	}
+	for _, d := range []struct {
+		name string
+		val  time.Duration
+	}{
+		{"timeout", s.Timeout},
+		{"read_timeout", s.ReadTimeout},
+	} {
+		if d.val < 0 {
+			return fmt.Errorf("%s: must not be negative", d.name)
+		}
 	}
 	return nil
 }
