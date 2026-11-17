@@ -110,5 +110,8 @@ jobs:
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: moderate
-          # Compatible with the Apache-2.0 license of the project.
-          allow-licenses: Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, MIT, MPL-2.0
+          # Compatible with the Apache-2.0 license of the project. The LicenseRef
+          # is the Go patent grant that ships with golang.org/x/*: scancode
+          # reports it as a second license next to BSD-3-Clause, it is not a
+          # restriction.
+          allow-licenses: Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, MIT, MPL-2.0, LicenseRef-scancode-google-patent-license-golang
