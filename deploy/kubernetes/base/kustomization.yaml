@@ -10,6 +10,7 @@ resources:
   - deployment.yaml
   - service.yaml
   - pdb.yaml
+  - networkpolicy.yaml
 
 # The hash suffix in the ConfigMap name rolls the Deployment on every
 # config change.

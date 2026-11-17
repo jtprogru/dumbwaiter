@@ -1,0 +1,25 @@
+# Admin port restricted to the monitoring namespace, public ports open.
+s3:
+  existingSecret: dumbwaiter-s3
+
+tls:
+  enabled: true
+  certificates:
+    - name: example-com
+      secretName: example-com-tls
+
+networkPolicy:
+  enabled: true
+  metricsFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+  egress:
+    enabled: true
+    rules:
+      - ports:
+          - port: 53
+            protocol: UDP
+      - ports:
+          - port: 443
+            protocol: TCP

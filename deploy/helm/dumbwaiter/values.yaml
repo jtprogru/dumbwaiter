@@ -214,6 +214,23 @@ pdb:
   # Takes precedence over minAvailable when set.
   maxUnavailable: ""
 
+# Admin port has no authentication: /metrics and the probes answer any pod in
+# the cluster and expose the configured host and bucket names.
+networkPolicy:
+  enabled: false
+  # Who may reach the admin port: kubelet probes from the node are unaffected,
+  # this covers the scraper and anything else that reads /metrics. Empty means
+  # every pod in the cluster.
+  metricsFrom: []
+  # - namespaceSelector:
+  #     matchLabels:
+  #       kubernetes.io/metadata.name: monitoring
+  egress:
+    # Off by default: S3 endpoints and DNS differ per cluster, a wrong rule
+    # here breaks the proxy silently.
+    enabled: false
+    rules: []
+
 autoscaling:
   enabled: false
   minReplicas: 2
