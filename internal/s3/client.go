@@ -33,6 +33,7 @@ type Client struct {
 	signer    *v4.Signer
 	http      *http.Client
 	metrics   *metrics.Metrics
+	readIdle  time.Duration
 }
 
 func New(cfg config.S3, m *metrics.Metrics) (*Client, error) {
@@ -64,6 +65,7 @@ func New(cfg config.S3, m *metrics.Metrics) (*Client, error) {
 		pathStyle: cfg.PathStyle,
 		signer:    v4.NewSigner(),
 		metrics:   m,
+		readIdle:  cfg.ReadTimeout,
 		http: &http.Client{
 			Transport: transport,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -106,7 +108,40 @@ func (c *Client) Do(ctx context.Context, method, bucket, key string, hdr http.He
 	start := time.Now()
 	resp, err := c.http.Do(req)
 	c.metrics.S3Request(bucket, method, resultCode(ctx, resp, err), time.Since(start))
+	if err == nil && resp != nil {
+		// ResponseHeaderTimeout covers only the headers. A storage that sends
+		// them and then stalls would hold the body read forever.
+		resp.Body = newIdleReader(resp.Body, c.readIdle)
+	}
 	return resp, err
+}
+
+// idleReader closes the body when no read completed within timeout, which
+// unblocks a Read that is already waiting. Slow but progressing downloads
+// never time out, because the deadline is refreshed on every read.
+type idleReader struct {
+	body    io.ReadCloser
+	timeout time.Duration
+	timer   *time.Timer
+}
+
+func newIdleReader(body io.ReadCloser, timeout time.Duration) io.ReadCloser {
+	if timeout <= 0 {
+		return body
+	}
+	r := &idleReader{body: body, timeout: timeout}
+	r.timer = time.AfterFunc(timeout, func() { r.body.Close() })
+	return r
+}
+
+func (r *idleReader) Read(p []byte) (int, error) {
+	r.timer.Reset(r.timeout)
+	return r.body.Read(p)
+}
+
+func (r *idleReader) Close() error {
+	r.timer.Stop()
+	return r.body.Close()
 }
 
 // resultCode is the code label of a request: the response status, or why
