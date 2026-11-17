@@ -194,7 +194,8 @@ func TestServe(t *testing.T) {
 		wantHeader map[string]string
 	}{
 		{name: "root index", target: "/", wantStatus: 200, wantBody: "home",
-			wantHeader: map[string]string{"Content-Type": "text/html", "X-Frame-Options": "DENY", "X-Amz-Request-Id": ""}},
+			wantHeader: map[string]string{"Content-Type": "text/html", "X-Frame-Options": "DENY", "X-Amz-Request-Id": "",
+				"X-Content-Type-Options": "nosniff"}},
 		{name: "dir with slash", target: "/docs/", wantStatus: 200, wantBody: "docs"},
 		{name: "dir without slash redirects", target: "/docs?x=1", wantStatus: 301,
 			wantHeader: map[string]string{"Location": "/docs/?x=1"}},
@@ -329,5 +330,46 @@ func TestStreamsLargeBody(t *testing.T) {
 	rec := do(h, "GET", "http://example.com/big.bin", nil)
 	if rec.Code != 200 || !bytes.Equal(rec.Body.Bytes(), []byte(big)) {
 		t.Fatalf("status %d, %d bytes", rec.Code, rec.Body.Len())
+	}
+}
+
+// The type comes from object metadata or an extension guess, so sniffing must
+// be off unless the operator overrides the header explicitly.
+func TestNoSniffDefaultIsConfigurable(t *testing.T) {
+	fake := &fakeS3{objects: map[string]object{"/site/index.html": {body: "home"}}}
+
+	t.Run("default", func(t *testing.T) {
+		h := newTestHandler(t, fake, config.Site{})
+		if got := do(h, "GET", "http://example.com/", nil).Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+		}
+	})
+
+	t.Run("config wins", func(t *testing.T) {
+		h := newTestHandler(t, fake, config.Site{Headers: map[string]string{"X-Content-Type-Options": "sniff"}})
+		if got := do(h, "GET", "http://example.com/", nil).Header().Get("X-Content-Type-Options"); got != "sniff" {
+			t.Errorf("X-Content-Type-Options = %q, want the configured sniff", got)
+		}
+	})
+}
+
+// AccessDenied is served as 404 so bucket contents do not leak, but it is a
+// permission problem and must be visible in the log and in a metric.
+func TestAccessDeniedIsLoggedAndCounted(t *testing.T) {
+	fake := &fakeS3{deny: true, objects: map[string]object{"/site/index.html": {body: "home"}}}
+	h := newTestHandler(t, fake, config.Site{})
+
+	if rec := do(h, "GET", "http://example.com/nope", nil); rec.Code != 404 {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	var out strings.Builder
+	for _, s := range h.sites {
+		s.metrics.WritePrometheus(&out)
+		break
+	}
+	// Two misses: the object itself, then the <path>/index.html HEAD that
+	// decides whether /nope should redirect.
+	if want := `dumbwaiter_s3_access_denied_masked_total{bucket="site"} 2`; !strings.Contains(out.String(), want) {
+		t.Errorf("missing %s in\n%s", want, out.String())
 	}
 }
