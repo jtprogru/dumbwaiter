@@ -302,8 +302,8 @@ func (s *site) fetch(w http.ResponseWriter, r *http.Request, method, key string,
 			return nil, false
 		}
 		if code == "AccessDenied" || code == "" {
-			// Served as 404 so the bucket contents do not leak, but this is
-			// still a permission problem worth an alert, not a missing key.
+			// Preserve the public 404. This can be an ordinary missing key
+			// without ListBucket, or a permissions problem; the metric is ambiguous.
 			s.metrics.S3AccessDeniedMasked(s.cfg.Bucket)
 			s.log.Warn("s3 denied access, serving not found", "key", key, "code", code)
 			return nil, true
