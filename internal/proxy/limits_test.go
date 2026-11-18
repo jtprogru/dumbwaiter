@@ -88,6 +88,11 @@ func TestAdmissionLimits(t *testing.T) {
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
+				defer func() {
+					if p := recover(); p != nil && (!tt.cancelClient || p != http.ErrAbortHandler) { //nolint:errorlint // net/http requires the exact panic sentinel.
+						t.Errorf("unexpected panic: %v", p)
+					}
+				}()
 				h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, "GET", "http://a.test/blocked", nil))
 			}()
 			select {

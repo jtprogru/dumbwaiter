@@ -107,6 +107,16 @@ func (m *Metrics) HTTP(listener string) *HTTP {
 // Start counts a request in flight until Done.
 func (h *HTTP) Start() { h.inFlight.Inc() }
 
+// ResponseFinished records the local transfer outcome, separately from the
+// committed HTTP status. A completed write does not prove client receipt.
+func (h *HTTP) ResponseFinished(host, outcome string) {
+	if host == "" {
+		host = unknownHost
+	}
+	h.m.set.GetOrCreateCounter(series("dumbwaiter_http_response_outcomes_total",
+		"listener", h.listener, "host", host, "outcome", outcome)).Inc()
+}
+
 // Done records a finished request. host is the configured host the request
 // was routed to, or "" when it matched no site. d covers the whole response
 // including the body, so large files to slow clients make it long.

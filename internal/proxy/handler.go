@@ -255,8 +255,13 @@ func (s *site) tryServe(w http.ResponseWriter, r *http.Request, budget *lookup, 
 	if r.Method == http.MethodHead || status == http.StatusNotModified {
 		return true
 	}
-	if _, err := io.Copy(w, resp.Body); err != nil && r.Context().Err() == nil {
-		s.log.Warn("copy response body", "key", key, "err", err)
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		if r.Context().Err() == nil {
+			s.log.Warn("copy response body", "key", key, "err", err)
+		}
+		// Headers are committed. Terminate the connection / reset the stream
+		// so a truncated chunked body cannot look like a complete response.
+		panic(http.ErrAbortHandler)
 	}
 	return true
 }
