@@ -30,6 +30,31 @@ env:
   HELM_VERSION: v4.3.1
 
 jobs:
+  monitoring:
+    name: Local monitoring integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate configs, dashboards and alert rules
+        run: make obs-check
+      - name: Start local stack
+        run: make obs-up
+      - name: Verify k6 profiles and native-histogram remote write
+        run: make obs-load-check
+      - name: Verify metrics, logs, synthetic probe and dashboard queries
+        run: make obs-smoke
+      - name: Container diagnostics on failure
+        if: failure()
+        run: docker compose -f deploy/monitoring/compose.yaml logs --no-color --tail=100
+      - name: Stop local stack
+        if: always()
+        run: make obs-down
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
