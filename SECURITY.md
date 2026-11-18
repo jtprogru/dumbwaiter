@@ -31,7 +31,7 @@ Out of scope:
 ## Known limitations
 
 - `quic-go` has no deadline for reading request headers over HTTP/3. `h3_idle_timeout` and `h3_max_incoming_streams` bound a client that opens a stream and never finishes it, but a slow drip of pings on an otherwise idle connection is only cut when the inactivity timeout fires. With `server.https.http3` enabled, front the proxy with a rate limiter or a CDN.
-- The admin port (`/healthz`, `/readyz`, `/metrics`) has no authentication. In Kubernetes it is reachable from any pod unless `networkPolicy.enabled` (Helm) or the `NetworkPolicy` in the kustomize base restricts it.
+- The admin port (`/healthz`, `/readyz`, `/metrics`) has no authentication. The binary defaults to loopback. Container configurations explicitly bind it to `:9090`; Compose publishes it only on host loopback. The Helm NetworkPolicy is enabled by default and allows admin ingress only from `metricsFrom` (empty means no pod ingress). Kustomize allows the monitoring namespace. These policies require an enforcing CNI and can be widened by other policies; validate access in the target cluster.
 
 ## Verifying releases
 

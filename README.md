@@ -102,6 +102,21 @@ httpRoute:
 
 Чарт откажется рендериться, если `server.https` задан руками в `config`, или если `tls.redirectToHTTPS` включён вместе с Ingress или Gateway: edge шлёт в прокси plain HTTP, получает 301 на https, и так по кругу. Примеры values для всех режимов лежат в `deploy/helm/dumbwaiter/ci`, их проверяет `make helm-lint`.
 
+NetworkPolicy включена по умолчанию. Пустой `networkPolicy.metricsFrom` закрывает admin-порт для других pod'ов; настрой allowlist перед включением scrape:
+
+```yaml
+networkPolicy:
+  metricsFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: vmagent
+```
+
+Оба selector в одном элементе применяются одновременно: это pod'ы с указанным label в namespace `monitoring`. Подставь реальные labels scraper. Публичные порты разрешены для всех источников; UDP разрешён только при включённых TLS и HTTP/3. Нужен CNI с поддержкой NetworkPolicy. Другие разрешающие политики складываются с этой — проверь, нет ли отдельного allow-all. `make check-network-policies` проверяет render Helm и Kustomize, фактический доступ нужно дополнительно проверить в кластере.
+
 ### kustomize
 
 Манифесты лежат в `deploy/kubernetes` в виде kustomize base и трёх overlay:
@@ -235,7 +250,9 @@ quic-go и в прокси, и в Caddy хочет UDP-буферы около 7
 
 `GET /metrics` на admin-порту отдаёт метрики в текстовом формате Prometheus, его же читают VictoriaMetrics и vmagent. Гистограммы классические, с бакетами `le`, так что `histogram_quantile` работает и в PromQL, и в MetricsQL. Без явной настройки admin слушает `127.0.0.1:9090`; systemd использует тот же bind. Container-конфиги явно задают `:9090`: Compose публикует этот порт только на loopback хоста, Kubernetes защищает его NetworkPolicy. Короткие admin-ответы имеют абсолютный write timeout, равный `server.write_idle_timeout`.
 
-Аутентификации на admin-порту нет, поэтому в кластере его видит любой pod: `/metrics` называет домены и бакеты из конфига. В Helm это закрывает `networkPolicy.enabled` с `metricsFrom`, в kustomize — `NetworkPolicy` из base, ограничивающая 9090 неймспейсом мониторинга. Пробы kubelet идут с ноды и политикой не режутся. Без NetworkPolicy админ-порт открыт для всего кластера.
+Аутентификации на admin-порту нет: `/metrics` называет домены и бакеты из конфига. В Helm policy включена по умолчанию и разрешает admin только источникам из `metricsFrom`; пустой список не разрешает никого. В Kustomize base разрешён namespace `monitoring`. Пробы kubelet с ноды pod'а сохраняют доступ. При отключённой или не поддерживаемой CNI политике admin остаётся доступен по Pod IP.
+
+При обновлении существующей установки: добавь `metricsFrom` с selectors scraper в Helm values. Если запускаешь собственный container-конфиг, явно задай `server.admin.addr: ":9090"` и сетевые ограничения — прежний неявный bind на все интерфейсы заменён loopback. Поставляемые Compose/Kubernetes конфиги уже учитывают это изменение.
 
 | Метрика | Тип | Лейблы | Что показывает |
 |---|---|---|---|

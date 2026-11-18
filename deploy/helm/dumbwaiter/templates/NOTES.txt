@@ -2,6 +2,15 @@
 {{- $hosts := fromJsonArray (include "dumbwaiter.hosts" .) -}}
 dumbwaiter {{ .Values.image.tag | default .Chart.AppVersion }} is deployed as {{ $fullname }} in {{ .Release.Namespace }}.
 Sites: {{ join ", " $hosts }}
+{{- if not .Values.networkPolicy.enabled }}
+
+WARNING: NetworkPolicy is disabled. Protect the unauthenticated admin port
+with an external network policy before using this deployment.
+{{- else if not .Values.networkPolicy.metricsFrom }}
+
+Admin ingress is closed to other pods. Configure networkPolicy.metricsFrom
+with the scraper's namespace/pod selectors to enable metrics collection.
+{{- end }}
 {{- if and (not (include "dumbwaiter.s3SecretName" .)) (not .Values.extraEnvFrom) (not .Values.extraEnv) (contains "${S3_" (toYaml .Values.config)) }}
 
 WARNING: config references ${S3_...} variables, but no Secret provides them.

@@ -117,7 +117,10 @@ check-configs: build ## Validate every committed YAML config
 
 ci: lint test-race ## Quick pre-push check: lint + race tests
 
-ci-full: fmt-check tidy-check lint test-race govulncheck check-configs manifests helm-lint compose-config ## Everything CI runs
+ci-full: fmt-check tidy-check lint test-race govulncheck check-configs manifests helm-lint check-network-policies compose-config ## Everything CI runs
+
+check-network-policies: ## Assert admin isolation and HTTP/3 access in rendered policies (helm + kubectl required)
+	REQUIRE_DEPLOY_TOOLS=1 $(GO) test -count=1 ./internal/deploytest
 
 # --- release ----------------------------------------------------------------
 
@@ -204,4 +207,4 @@ clean: ## Remove build artifacts
 
 .PHONY: help run build tidy fmt vet fmt-check tidy-check test test-race lint lint-fix govulncheck \
         check-configs ci ci-full set-version docker-build docker-push manifests diff deploy \
-        helm-lint compose-config tools clean
+        helm-lint check-network-policies compose-config tools clean
