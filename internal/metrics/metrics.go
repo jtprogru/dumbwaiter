@@ -78,6 +78,17 @@ func (m *Metrics) S3AccessDeniedMasked(bucket string) {
 	m.set.GetOrCreateCounter(series("dumbwaiter_s3_access_denied_masked_total", "bucket", bucket)).Inc()
 }
 
+// AdmissionRejected counts requests refused before contacting S3. host is a
+// configured host, and scope is either "global" or "site".
+func (m *Metrics) AdmissionRejected(host, scope string) {
+	m.set.GetOrCreateCounter(series("dumbwaiter_admission_rejected_total", "host", host, "scope", scope)).Inc()
+}
+
+// LookupTimeout counts requests whose object search exceeded its time budget.
+func (m *Metrics) LookupTimeout(host string) {
+	m.set.GetOrCreateCounter(series("dumbwaiter_lookup_timeouts_total", "host", host)).Inc()
+}
+
 // HTTP records requests to one public listener: http, https or http3.
 type HTTP struct {
 	m        *Metrics

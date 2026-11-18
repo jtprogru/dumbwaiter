@@ -51,6 +51,8 @@ func TestRequestMetrics(t *testing.T) {
 
 	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
+	lookupExpired, expire := context.WithCancelCause(t.Context())
+	expire(context.DeadlineExceeded)
 
 	tests := []struct {
 		name     string
@@ -62,6 +64,7 @@ func TestRequestMetrics(t *testing.T) {
 		{"status", upstream.URL, t.Context(), "missing", "404"},
 		{"timeout", upstream.URL, t.Context(), "slow", metrics.S3Timeout},
 		{"canceled", upstream.URL, canceled, "missing", metrics.S3Canceled},
+		{"lookup budget expired", upstream.URL, lookupExpired, "missing", metrics.S3Timeout},
 		{"refused", closed.URL, t.Context(), "missing", metrics.S3Error},
 	}
 	for _, tt := range tests {

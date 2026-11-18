@@ -160,6 +160,8 @@ func resultCode(ctx context.Context, resp *http.Response, err error) string {
 	switch {
 	case err == nil:
 		return strconv.Itoa(resp.StatusCode)
+	case errors.Is(context.Cause(ctx), context.DeadlineExceeded):
+		return metrics.S3Timeout
 	case ctx.Err() != nil:
 		return metrics.S3Canceled
 	case errors.As(err, &ne) && ne.Timeout():
