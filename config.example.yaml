@@ -72,8 +72,8 @@ s3:
   secret_access_key: ${S3_SECRET_ACCESS_KEY}
   # Time to wait for S3 response headers.
   timeout: 30s
-  # Longest gap between two reads of the response body. Without it a storage
-  # that sends headers and then stalls holds the connection forever.
+  # Maximum duration of one blocking body Read. Time spent writing to the
+  # downstream client is excluded; a stalled S3 read closes the body.
   read_timeout: 30s
 
 sites:
