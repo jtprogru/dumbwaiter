@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -46,7 +47,7 @@ func run() error {
 		return nil
 	}
 
-	log := newLogger(cfg.Log)
+	log := newLogger(cfg.Log, os.Stdout)
 	slog.SetDefault(log)
 
 	m := metrics.New()
@@ -68,12 +69,14 @@ func run() error {
 	return srv.Run(ctx)
 }
 
-func newLogger(cfg config.Log) *slog.Logger {
+func newLogger(cfg config.Log, output io.Writer) *slog.Logger {
+	// Keep request values as structured attributes: both standard handlers
+	// escape control characters and quote values before writing log records.
 	var level slog.Level
 	_ = level.UnmarshalText([]byte(cfg.Level))
 	opts := &slog.HandlerOptions{Level: level}
 	if cfg.Format == "text" {
-		return slog.New(slog.NewTextHandler(os.Stdout, opts))
+		return slog.New(slog.NewTextHandler(output, opts))
 	}
-	return slog.New(slog.NewJSONHandler(os.Stdout, opts))
+	return slog.New(slog.NewJSONHandler(output, opts))
 }
