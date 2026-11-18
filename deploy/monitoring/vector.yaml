@@ -1,0 +1,52 @@
+data_dir: /var/lib/vector
+api:
+  enabled: true
+  address: 127.0.0.1:8686
+sources:
+  dumbwaiter:
+    type: docker_logs
+    # Both selectors must match; do not collect production or cubic-root logs.
+    include_labels:
+      - com.docker.compose.project=dumbwaiter-monitoring
+      - com.docker.compose.service=dumbwaiter
+  internal:
+    type: internal_metrics
+transforms:
+  app:
+    type: remap
+    inputs: [dumbwaiter]
+    source: |
+      structured, err = parse_json(.message)
+      if err == null && is_object(structured) {
+        . = merge(., object!(structured))
+        if exists(.msg) { .message = del(.msg) }
+        if exists(.time) { .timestamp = del(.time) }
+      }
+      .service = "dumbwaiter"
+      .environment = "local"
+      del(.label)
+      del(.container_created_at)
+      del(.source_type)
+      # Do NOT delete .host: it is the HTTP Host from the application's JSON.
+sinks:
+  victorialogs:
+    type: elasticsearch
+    inputs: [app]
+    endpoints: ["http://victorialogs:9428/insert/elasticsearch/"]
+    api_version: v8
+    compression: gzip
+    healthcheck: {enabled: false}
+    batch: {timeout_secs: 1}
+    buffer:
+      type: disk
+      max_size: 268435488
+      when_full: block
+    query:
+      _msg_field: message
+      _time_field: timestamp
+      # Request fields (host/path/remote/user_agent) must NOT be stream keys.
+      _stream_fields: service,environment,container_name
+  prometheus:
+    type: prometheus_exporter
+    inputs: [internal]
+    address: 0.0.0.0:9598

@@ -43,7 +43,7 @@ OVERLAYS  ?= gateway ingress tls
 OVERLAY   ?= gateway
 NAMESPACE ?=
 # Every committed config, checked with placeholder S3 keys.
-CONFIGS   ?= config.example.yaml $(wildcard deploy/kubernetes/base/config.yaml deploy/kubernetes/overlays/*/config.yaml deploy/compose/config*.yaml deploy/systemd/config.yaml)
+CONFIGS   ?= config.example.yaml $(wildcard deploy/kubernetes/base/config.yaml deploy/kubernetes/overlays/*/config.yaml deploy/compose/config*.yaml deploy/systemd/config.yaml deploy/monitoring/config.yaml)
 
 CHART        ?= deploy/helm/dumbwaiter
 # The chart is linted with its defaults and with each of these.
@@ -117,7 +117,7 @@ check-configs: build ## Validate every committed YAML config
 
 ci: lint test-race ## Quick pre-push check: lint + race tests
 
-ci-full: fmt-check tidy-check lint test-race govulncheck check-configs manifests helm-lint check-network-policies compose-config ## Everything CI runs
+ci-full: fmt-check tidy-check lint test-race govulncheck check-configs manifests helm-lint check-network-policies compose-config obs-check ## Static checks + Go tests (monitoring E2E: obs-up obs-smoke)
 
 check-loadtest: ## Test k6 completion checks against a local slow upstream (k6 required)
 	REQUIRE_LOAD_TOOLS=1 $(GO) test -count=1 ./internal/loadtest
@@ -189,6 +189,35 @@ compose-config: ## Validate the docker compose setups against .env.example
 		echo ok; \
 	done
 
+# --- local monitoring (independent from production Compose) ------------------
+
+OBS_COMPOSE = $(DOCKER) compose -f deploy/monitoring/compose.yaml
+# Keep the unit-test tool aligned with vmalert in deploy/monitoring/compose.yaml.
+OBS_VM_VERSION = v1.156.0
+
+obs-up: ## Build app and start local monitoring (Grafana on localhost:3333)
+	VERSION=$(VERSION) $(OBS_COMPOSE) up -d --build
+	@echo 'Grafana: http://localhost:3333 (admin/admin unless overridden)'
+	@echo 'Targets: http://localhost:8429/targets; alerts: http://localhost:8880'
+	@echo 'Run make obs-smoke to verify metrics, logs, dashboards and synthetic probe.'
+
+obs-down: ## Stop local monitoring, retaining data volumes
+	$(OBS_COMPOSE) down
+
+obs-check: ## Validate monitoring configs, generated dashboards and alert unit tests
+	$(OBS_COMPOSE) config --quiet
+	python3 scripts/monitoring-dashboards.py --check
+	$(OBS_COMPOSE) run --rm --no-deps vmagent -promscrape.config=/etc/vmagent/scrape.yaml -promscrape.config.dryRun
+	$(OBS_COMPOSE) run --rm --no-deps vmalert -rule=/etc/vmalert/rules.yaml -dryRun
+	$(OBS_COMPOSE) run --rm --no-deps vector validate --no-environment /etc/vector/vector.yaml
+	$(DOCKER) run --rm -v "$(CURDIR)/deploy/monitoring/alerts:/rules:ro" victoriametrics/vmalert-tool:$(OBS_VM_VERSION) unittest --files=/rules/tests.yaml
+
+obs-smoke: ## End-to-end monitoring checks against the running local stack (Python 3)
+	python3 scripts/monitoring-smoke.py
+
+obs-dashboards: ## Regenerate committed Grafana dashboards
+	python3 scripts/monitoring-dashboards.py
+
 # --- tools ------------------------------------------------------------------
 
 tools: $(GOLANGCI_LINT_STAMP) $(GOVULNCHECK_STAMP) ## Install pinned tools into ./bin
@@ -210,4 +239,5 @@ clean: ## Remove build artifacts
 
 .PHONY: help run build tidy fmt vet fmt-check tidy-check test test-race lint lint-fix govulncheck \
         check-configs ci ci-full set-version docker-build docker-push manifests diff deploy \
-        helm-lint check-network-policies check-loadtest compose-config tools clean
+        helm-lint check-network-policies check-loadtest compose-config tools clean \
+        obs-up obs-down obs-check obs-smoke obs-dashboards
