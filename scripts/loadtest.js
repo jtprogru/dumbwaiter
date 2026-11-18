@@ -1,7 +1,7 @@
 // One request per iteration. Run only against a dedicated test environment.
 import http from 'k6/http';
 import { check } from 'k6';
-import { Rate } from 'k6/metrics';
+import { Counter, Rate } from 'k6/metrics';
 
 const baseURL = __ENV.BASE_URL;
 if (!baseURL) throw new Error('BASE_URL is required');
@@ -19,8 +19,12 @@ function positiveInt(name, fallback) {
 const expectedStatus = positiveInt('EXPECTED_STATUS', 200);
 const expectedProtocol = __ENV.EXPECTED_PROTOCOL;
 const method = __ENV.METHOD || 'GET';
+const requestTimeout = __ENV.REQUEST_TIMEOUT || '35s';
 if (!['GET', 'HEAD'].includes(method)) throw new Error('METHOD must be GET or HEAD');
 const unexpected = new Rate('unexpected_response');
+// A balance, not a monotonic counter: +1 at start, -1 after all checks.
+// Interrupted iterations leave a positive balance in the final thresholds.
+const unfinished = new Counter('unfinished_iterations');
 const headers = {};
 if (__ENV.HOST_HEADER) headers.Host = __ENV.HOST_HEADER;
 if (__ENV.RANGE) headers.Range = __ENV.RANGE;
@@ -37,11 +41,13 @@ export const options = {
       duration: __ENV.DURATION || '30s',
       preAllocatedVUs: positiveInt('PREALLOCATED_VUS', 20),
       maxVUs: positiveInt('MAX_VUS', 200),
-      gracefulStop: '35s',
+      gracefulStop: __ENV.GRACEFUL_STOP || requestTimeout,
     },
   },
   // Illustrative thresholds: replace with the SLO for the chosen object class.
   thresholds: {
+    iterations: ['count>0'],
+    unfinished_iterations: ['count==0'],
     unexpected_response: ['rate<0.001'],
     http_req_failed: ['rate<0.001'],
     http_req_duration: [
@@ -55,9 +61,10 @@ export const options = {
 http.setResponseCallback(http.expectedStatuses(expectedStatus));
 
 export default function () {
+  unfinished.add(1);
   const response = http.request(method, baseURL.replace(/\/$/, '') + path, null, {
     headers,
-    timeout: __ENV.REQUEST_TIMEOUT || '35s',
+    timeout: requestTimeout,
     tags: { name: __ENV.CASE || 'object' },
   });
   const statusOK = response.status === expectedStatus;
@@ -67,4 +74,5 @@ export default function () {
     'expected protocol': () => protocolOK,
   });
   unexpected.add(!statusOK || !protocolOK);
+  unfinished.add(-1);
 }
