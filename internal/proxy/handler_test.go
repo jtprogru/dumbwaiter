@@ -140,6 +140,12 @@ func newTestHandler(t *testing.T, fake *fakeS3, site config.Site) *Handler {
 	if site.Index == "" {
 		site.Index = "index.html"
 	}
+	if site.MaxInFlight == 0 {
+		site.MaxInFlight = 64
+	}
+	if site.LookupTimeout == 0 {
+		site.LookupTimeout = 30 * time.Second
+	}
 	storage := config.S3{
 		Endpoint:  upstream.URL,
 		Region:    "test-region",
@@ -150,7 +156,7 @@ func newTestHandler(t *testing.T, fake *fakeS3, site config.Site) *Handler {
 		storage.AccessKeyID = fake.creds.AccessKeyID
 		storage.SecretAccessKey = fake.creds.SecretAccessKey
 	}
-	h, err := New(&config.Config{S3: storage, Sites: []config.Site{site}}, metrics.New(), slog.New(slog.DiscardHandler))
+	h, err := New(&config.Config{Server: config.Server{MaxInFlight: 256}, S3: storage, Sites: []config.Site{site}}, metrics.New(), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -214,13 +214,13 @@ pdb:
   # Takes precedence over minAvailable when set.
   maxUnavailable: ""
 
-# Admin port has no authentication: /metrics and the probes answer any pod in
-# the cluster and expose the configured host and bucket names.
+# Admin has no authentication. Keep this policy enabled and explicitly allow
+# the scraper below. Requires a CNI that enforces NetworkPolicy.
 networkPolicy:
-  enabled: false
+  enabled: true
   # Who may reach the admin port: kubelet probes from the node are unaffected,
   # this covers the scraper and anything else that reads /metrics. Empty means
-  # every pod in the cluster.
+  # no pod ingress to admin is allowed by this policy. Public ports stay open.
   metricsFrom: []
   # - namespaceSelector:
   #     matchLabels:

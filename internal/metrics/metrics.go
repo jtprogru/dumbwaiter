@@ -72,10 +72,21 @@ func (m *Metrics) S3Request(bucket, method, code string, d time.Duration) {
 }
 
 // S3AccessDeniedMasked counts 403 AccessDenied responses that the proxy turns
-// into 404. They mean a bucket policy problem or a missing s3:ListBucket
-// permission, not a missing object, so they must be visible to alerts.
+// into 404. Without s3:ListBucket a missing object also returns AccessDenied;
+// this counter alone cannot identify an IAM regression.
 func (m *Metrics) S3AccessDeniedMasked(bucket string) {
 	m.set.GetOrCreateCounter(series("dumbwaiter_s3_access_denied_masked_total", "bucket", bucket)).Inc()
+}
+
+// AdmissionRejected counts requests refused before contacting S3. host is a
+// configured host, and scope is either "global" or "site".
+func (m *Metrics) AdmissionRejected(host, scope string) {
+	m.set.GetOrCreateCounter(series("dumbwaiter_admission_rejected_total", "host", host, "scope", scope)).Inc()
+}
+
+// LookupTimeout counts requests whose object search exceeded its time budget.
+func (m *Metrics) LookupTimeout(host string) {
+	m.set.GetOrCreateCounter(series("dumbwaiter_lookup_timeouts_total", "host", host)).Inc()
 }
 
 // HTTP records requests to one public listener: http, https or http3.
@@ -95,6 +106,16 @@ func (m *Metrics) HTTP(listener string) *HTTP {
 
 // Start counts a request in flight until Done.
 func (h *HTTP) Start() { h.inFlight.Inc() }
+
+// ResponseFinished records the local transfer outcome, separately from the
+// committed HTTP status. A completed write does not prove client receipt.
+func (h *HTTP) ResponseFinished(host, outcome string) {
+	if host == "" {
+		host = unknownHost
+	}
+	h.m.set.GetOrCreateCounter(series("dumbwaiter_http_response_outcomes_total",
+		"listener", h.listener, "host", host, "outcome", outcome)).Inc()
+}
 
 // Done records a finished request. host is the configured host the request
 // was routed to, or "" when it matched no site. d covers the whole response

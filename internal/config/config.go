@@ -28,6 +28,9 @@ type Server struct {
 	HTTP  HTTP   `yaml:"http"`
 	HTTPS *HTTPS `yaml:"https"`
 	Admin Admin  `yaml:"admin"`
+	// MaxInFlight caps matched requests across all sites and public listeners,
+	// including body streaming. Excess requests are rejected without queuing.
+	MaxInFlight int `yaml:"max_in_flight"`
 
 	// ReadHeaderTimeout covers the request line and the headers only.
 	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
@@ -118,8 +121,21 @@ type Site struct {
 	// SPA serves the root index for missing paths without a file extension.
 	SPA     bool              `yaml:"spa"`
 	Headers map[string]string `yaml:"headers"`
+	// DirectoryRedirect probes <path>/<index> after a miss on a slashless URL.
+	// Nil preserves the default directory redirect behavior.
+	DirectoryRedirect *bool `yaml:"directory_redirect"`
+	// MaxInFlight is shared by every host alias of this site.
+	MaxInFlight int `yaml:"max_in_flight"`
+	// LookupTimeout covers the initial lookup and all fallbacks, but stops
+	// before streaming a selected object's body to the client.
+	LookupTimeout time.Duration `yaml:"lookup_timeout"`
 	// S3 replaces the top-level s3 block for this site entirely.
 	S3 *S3 `yaml:"s3"`
+}
+
+// DirectoryRedirectEnabled reports whether slashless directory lookups are enabled.
+func (s Site) DirectoryRedirectEnabled() bool {
+	return s.DirectoryRedirect == nil || *s.DirectoryRedirect
 }
 
 // Hosts returns all configured hosts, sorted. Handy for logs.
@@ -218,7 +234,8 @@ func expandEnv(root *yaml.Node) error {
 func (c *Config) setDefaults() {
 	s := &c.Server
 	setDefault(&s.HTTP.Addr, ":8080")
-	setDefault(&s.Admin.Addr, ":9090")
+	setDefault(&s.Admin.Addr, "127.0.0.1:9090")
+	setDefault(&s.MaxInFlight, 256)
 	setDefault(&s.ReadHeaderTimeout, 10*time.Second)
 	setDefault(&s.ReadTimeout, 30*time.Second)
 	setDefault(&s.WriteIdleTimeout, 30*time.Second)
@@ -240,6 +257,8 @@ func (c *Config) setDefaults() {
 	c.S3.setDefaults()
 	for i := range c.Sites {
 		site := &c.Sites[i]
+		setDefault(&site.MaxInFlight, 64)
+		setDefault(&site.LookupTimeout, 30*time.Second)
 		setDefault(&site.Index, "index.html")
 		site.Index = strings.TrimPrefix(site.Index, "/")
 		site.NotFound = strings.TrimPrefix(site.NotFound, "/")
@@ -266,6 +285,9 @@ func (s *S3) setDefaults() {
 func (c *Config) validate() error {
 	var errs []error
 	add := func(format string, args ...any) { errs = append(errs, fmt.Errorf(format, args...)) }
+	if c.Server.MaxInFlight < 1 {
+		add("server.max_in_flight: must be positive")
+	}
 
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":
@@ -331,6 +353,12 @@ func (c *Config) validate() error {
 	seen := map[string]int{}
 	for i, site := range c.Sites {
 		p := fmt.Sprintf("sites[%d]", i)
+		if site.MaxInFlight < 1 {
+			add("%s.max_in_flight: must be positive", p)
+		}
+		if site.LookupTimeout < 0 {
+			add("%s.lookup_timeout: must not be negative", p)
+		}
 		if len(site.Hosts) == 0 {
 			add("%s.hosts: at least one host is required", p)
 		}

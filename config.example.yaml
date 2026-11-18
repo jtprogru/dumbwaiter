@@ -35,9 +35,14 @@ server:
     h3_handshake_idle_timeout: 5s
     h3_max_incoming_streams: 100
 
-  # /healthz, /readyz and /metrics in the Prometheus text format.
+  # /healthz, /readyz and /metrics; no authentication. Loopback by default.
+  # In containers set :9090 explicitly and restrict it at the network layer.
   admin:
-    addr: ":9090"
+    addr: "127.0.0.1:9090"
+
+  # Across all sites/listeners, including streaming. Reject excess with 503
+  # and Retry-After instead of queuing. Tune using a load test.
+  max_in_flight: 256
 
   read_header_timeout: 10s
   # Bounds the whole request, body included, and the drain of an unread body.
@@ -71,8 +76,8 @@ s3:
   secret_access_key: ${S3_SECRET_ACCESS_KEY}
   # Time to wait for S3 response headers.
   timeout: 30s
-  # Longest gap between two reads of the response body. Without it a storage
-  # that sends headers and then stalls holds the connection forever.
+  # Maximum duration of one blocking body Read. Time spent writing to the
+  # downstream client is excluded; a stalled S3 read closes the body.
   read_timeout: 30s
 
 sites:
@@ -84,6 +89,14 @@ sites:
     index: index.html
     # Served with status 404 when nothing matched.
     not_found: 404.html
+    # Probe /docs/index.html after /docs misses, then redirect to /docs/.
+    # Disable to save one S3 call per slashless miss. /docs/ still works.
+    directory_redirect: true
+    # Shared by all host aliases of this site. Zero uses the default.
+    max_in_flight: 64
+    # Total time to select a response across all lookups and fallbacks.
+    # Once selected, streaming uses read/write idle timeouts instead.
+    lookup_timeout: 30s
     headers:
       Strict-Transport-Security: max-age=31536000
       X-Content-Type-Options: nosniff

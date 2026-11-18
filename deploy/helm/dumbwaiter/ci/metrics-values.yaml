@@ -10,3 +10,10 @@ metrics:
       release: kube-prometheus-stack
   vmPodScrape:
     enabled: true
+
+# Discovery alone does not grant network access to the admin listener.
+networkPolicy:
+  metricsFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring

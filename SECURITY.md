@@ -30,8 +30,9 @@ Out of scope:
 
 ## Known limitations
 
-- `quic-go` has no deadline for reading request headers over HTTP/3. `h3_idle_timeout` and `h3_max_incoming_streams` bound a client that opens a stream and never finishes it, but a slow drip of pings on an otherwise idle connection is only cut when the inactivity timeout fires. With `server.https.http3` enabled, front the proxy with a rate limiter or a CDN.
-- The admin port (`/healthz`, `/readyz`, `/metrics`) has no authentication. In Kubernetes it is reachable from any pod unless `networkPolicy.enabled` (Helm) or the `NetworkPolicy` in the kustomize base restricts it.
+- The pinned `quic-go` version has no `Server.ReadHeaderTimeout` option. This alone is not evidence of a vulnerability. `h3_max_incoming_streams` is a per-connection limit; assess HTTP/3 connection and incomplete-stream resource use in deployment load tests. Do not assume QUIC PING frames reset the HTTP/3 application idle timeout.
+- The admin port (`/healthz`, `/readyz`, `/metrics`) has no authentication. The binary defaults to loopback. Container configurations explicitly bind it to `:9090`; Compose publishes it only on host loopback. The Helm NetworkPolicy is enabled by default and allows admin ingress only from `metricsFrom` (empty means no pod ingress). Kustomize allows the monitoring namespace. These policies require an enforcing CNI and can be widened by other policies; validate access in the target cluster.
+- Global and per-site in-flight limits reject excess work with 503, and a shared lookup timeout bounds S3 fallback. They do not cap incoming connections or requests per second. Use edge rate limiting and restrict direct origin access. `directory_redirect: false` removes an optional S3 lookup per slashless miss; no built-in cache is provided.
 
 ## Verifying releases
 

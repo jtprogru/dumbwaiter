@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -116,32 +117,40 @@ func (c *Client) Do(ctx context.Context, method, bucket, key string, hdr http.He
 	return resp, err
 }
 
-// idleReader closes the body when no read completed within timeout, which
-// unblocks a Read that is already waiting. Slow but progressing downloads
-// never time out, because the deadline is refreshed on every read.
+// idleReader limits time spent inside Read. Time spent writing to the client
+// is not an upstream stall. As with http.Response.Body, Close must unblock Read.
 type idleReader struct {
-	body    io.ReadCloser
-	timeout time.Duration
-	timer   *time.Timer
+	body      io.ReadCloser
+	timeout   time.Duration
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func newIdleReader(body io.ReadCloser, timeout time.Duration) io.ReadCloser {
 	if timeout <= 0 {
 		return body
 	}
-	r := &idleReader{body: body, timeout: timeout}
-	r.timer = time.AfterFunc(timeout, func() { r.body.Close() })
-	return r
+	return &idleReader{body: body, timeout: timeout}
 }
 
 func (r *idleReader) Read(p []byte) (int, error) {
-	r.timer.Reset(r.timeout)
-	return r.body.Read(p)
+	done := make(chan struct{})
+	timer := time.AfterFunc(r.timeout, func() {
+		_ = r.Close()
+		close(done)
+	})
+	n, err := r.body.Read(p)
+	if !timer.Stop() {
+		// Join an expired callback before the next Read can begin.
+		<-done
+		return n, context.DeadlineExceeded
+	}
+	return n, err
 }
 
 func (r *idleReader) Close() error {
-	r.timer.Stop()
-	return r.body.Close()
+	r.closeOnce.Do(func() { r.closeErr = r.body.Close() })
+	return r.closeErr
 }
 
 // resultCode is the code label of a request: the response status, or why
@@ -151,6 +160,8 @@ func resultCode(ctx context.Context, resp *http.Response, err error) string {
 	switch {
 	case err == nil:
 		return strconv.Itoa(resp.StatusCode)
+	case errors.Is(context.Cause(ctx), context.DeadlineExceeded):
+		return metrics.S3Timeout
 	case ctx.Err() != nil:
 		return metrics.S3Canceled
 	case errors.As(err, &ne) && ne.Timeout():

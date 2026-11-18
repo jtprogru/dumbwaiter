@@ -15,6 +15,7 @@
 - Доступ к S3 с подписью SigV4 по статическим ключам или анонимно к публичному бакету, адресация path-style или virtual-hosted.
 - Опционально: TLS с выбором сертификата по SNI, HTTP/2 и HTTP/3. Сертификаты перечитываются с диска, обновлённый cert-manager'ом Secret подхватывается без рестарта.
 - `/healthz`, `/readyz` и метрики Prometheus на отдельном admin-порту, graceful shutdown под SIGTERM.
+- Лимиты одновременно обслуживаемых запросов глобально и на сайт, общий бюджет поиска объекта в S3 и настраиваемая проверка directory index.
 
 ## Где терминировать TLS
 
@@ -54,9 +55,34 @@ dumbwaiter -check -config config.yaml
 - `path_style: true` нужен для MinIO, Ceph и большинства self-hosted хранилищ. Для AWS оставь `false`.
 - Без `access_key_id` и `secret_access_key` запросы уходят анонимно.
 - У сайта может быть свой блок `s3`. Он заменяет верхний целиком, ничего не наследуется.
-- Если у ключа нет права `s3:ListBucket`, S3 отвечает на отсутствующий объект `403 AccessDenied` вместо `404`. Прокси считает это за 404, чтобы не выдавать содержимое бакета, но пишет об этом в лог на уровне `warn` и считает `dumbwaiter_s3_access_denied_masked_total`: это признак суженной политики или потерянных прав, а не отсутствующего файла. Другие 403, например `SignatureDoesNotMatch`, превращаются в `502` и пишутся в лог с кодом ошибки.
+- Если у ключа нет права `s3:ListBucket`, S3 отвечает на отсутствующий объект `403 AccessDenied` вместо `404`. Прокси считает это за 404, пишет в лог на уровне `warn` и считает `dumbwaiter_s3_access_denied_masked_total`. Это неоднозначный сигнал: возможны как обычные отсутствующие файлы, так и потеря прав. Другие 403, например `SignatureDoesNotMatch`, превращаются в `502` и пишутся в лог с кодом ошибки.
 - Все ответы сайта получают `X-Content-Type-Options: nosniff`, потому что тип берётся из метаданных объекта или угадывается по расширению. Заголовок в `headers` сайта перекрывает его, в том числе значением, которое отключает nosniff.
-- Таймауты не дают одному клиенту занимать соединение. `read_header_timeout` ограничивает заголовки, `read_timeout` — всё тело запроса включая дочитывание неотправленного тела после ответа, `write_idle_timeout` сбрасывается перед каждой записью и рвёт только того, кто перестал читать: большой файл медленному, но читающему клиенту отдаётся полностью. Абсолютного write timeout нет намеренно, он убивал бы большие скачивания. У S3 то же самое: `timeout` ждёт заголовки, `read_timeout` — разрыв между чтениями тела.
+- `read_header_timeout` ограничивает чтение заголовков HTTP/1–2, `read_timeout` — чтение запроса. Тело запроса в S3 не передаётся; HTTP/1 соединения с объявленным телом закрываются после ответа, чтобы не ждать его дочитывания внутри записи. `write_idle_timeout` действует во время записи заголовков, тела и финального flush. После каждой операции deadline снимается, чтобы ожидание следующего фрагмента S3 не расходовало downstream timeout; перед завершающей записью самого HTTP server deadline выставляется снова. Абсолютного write timeout на публичных listener нет: он обрывал бы большие скачивания. У S3 `timeout` ограничивает ожидание заголовков, `read_timeout` — длительность одного блокирующего Read тела; ожидание downstream между чтениями в этот бюджет не входит.
+- При ошибке передачи после начала ответа прокси закрывает HTTP/1 соединение или сбрасывает HTTP/2–3 stream. Уже отправленный `200` изменить нельзя; обрыв учитывается отдельно в метрике outcomes и поле `outcome` access log.
+
+### Лимиты и поиск объектов
+
+`server.max_in_flight` по умолчанию равен 256, `sites[].max_in_flight` — 64. Лимиты учитывают принятый запрос, включая передачу тела и flush буферов, и действуют совместно для HTTP, HTTPS и HTTP/3. Все доменные алиасы одного сайта используют один лимит. При насыщении прокси сразу отвечает `503`, `Retry-After: 1` и `Cache-Control: no-store`, без обращения в S3 и без очереди. Ноль выбирает default, отрицательные значения запрещены. Эти defaults ограничивают работу процесса, но не являются измеренной production capacity; подобрать их нужно нагрузочным тестом.
+
+`sites[].lookup_timeout` (default `30s`) ограничивает время от первого S3 lookup до выбора ответа: объект, directory index, SPA index или custom 404. Последующие fallback не получают новый бюджет. По истечении возвращается `504` с `Cache-Control: no-store`, текущий запрос S3 отменяется. После выбора ответа таймер выключается: найденный большой файл может передаваться дольше этого времени. Отмена клиентского запроса продолжает отменять upstream и при streaming.
+
+`sites[].directory_redirect: false` отключает дополнительный `HEAD <path>/index.html` после miss на URL без завершающего `/`. Запросы `/` и `/docs/` по-прежнему получают index, SPA и custom 404 сохраняются. По умолчанию проверка включена для совместимости. Например, для отсутствующего `/app.js` и настроенной custom 404 отключение уменьшает число S3-запросов с трёх до двух. При выключенных directory redirect, SPA и custom 404 miss требует одного обращения.
+
+```yaml
+server:
+  max_in_flight: 256
+sites:
+  - hosts: [example.com, www.example.com]
+    bucket: example-com
+    max_in_flight: 64
+    lookup_timeout: 30s
+    directory_redirect: false
+    not_found: 404.html
+```
+
+Ответы с отказом в admission не занимают slots. Gauge `dumbwaiter_http_requests_in_flight` учитывает также их обработку и может превышать `max_in_flight`. Количество соединений и отклонённых запросов ограничивать на edge.
+
+Лимиты in-flight не заменяют rate limiting/CDN: быстро завершающиеся misses всё ещё могут создавать много операций S3. Встроенного cache пока нет; содержимое читается из S3 при каждом запросе. При планировании нагрузки учитывать и число S3-операций, и трафик.
 
 ## Kubernetes
 
@@ -102,6 +128,21 @@ httpRoute:
 
 Чарт откажется рендериться, если `server.https` задан руками в `config`, или если `tls.redirectToHTTPS` включён вместе с Ingress или Gateway: edge шлёт в прокси plain HTTP, получает 301 на https, и так по кругу. Примеры values для всех режимов лежат в `deploy/helm/dumbwaiter/ci`, их проверяет `make helm-lint`.
 
+NetworkPolicy включена по умолчанию. Пустой `networkPolicy.metricsFrom` закрывает admin-порт для других pod'ов; настрой allowlist перед включением scrape:
+
+```yaml
+networkPolicy:
+  metricsFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: vmagent
+```
+
+Оба selector в одном элементе применяются одновременно: это pod'ы с указанным label в namespace `monitoring`. Подставь реальные labels scraper. Публичные порты разрешены для всех источников; UDP разрешён только при включённых TLS и HTTP/3. Нужен CNI с поддержкой NetworkPolicy. Другие разрешающие политики складываются с этой — проверь, нет ли отдельного allow-all. `make check-network-policies` проверяет render Helm и Kustomize, фактический доступ нужно дополнительно проверить в кластере.
+
 ### kustomize
 
 Манифесты лежат в `deploy/kubernetes` в виде kustomize base и трёх overlay:
@@ -142,7 +183,7 @@ Client-side apply сливает порты Service по номеру и тер�
 - cert-manager нужен с DNS-01. HTTP-01 не сработает: порт 80 балансировщика приходит в прокси, а не в solver cert-manager'а.
 - quic-go при старте может предупредить, что не смог увеличить UDP receive buffer. Без привилегий это не лечится изнутри контейнера. Помогает `sysctl net.core.rmem_max=7500000` и `net.core.wmem_max=7500000` на нодах, но и без этого HTTP/3 работает.
 - При смене IP клиента (Wi-Fi на LTE) QUIC-соединение может попасть на другой pod и оборваться. Браузер переподключится, но миграция соединений между pod'ами не работает.
-- У quic-go нет аналога `read_header_timeout`: клиент может открыть stream и не дослать HEADERS-фрейм, и фаза чтения заголовков ничем не ограничена. Сейчас это сдерживают `h3_idle_timeout`, который рвёт соединение без активности, и `h3_max_incoming_streams`, который не даёт запарковать много недописанных запросов в одном соединении. Остаточный риск закрывает лимитер или CDN перед прокси; полноценный дедлайн ждёт соответствующей настройки в quic-go.
+- В закреплённой версии quic-go нет настройки `Server.ReadHeaderTimeout`. Само по себе это не подтверждает уязвимость. `h3_max_incoming_streams` ограничивает streams одного соединения; расход ресурсов на множество соединений и незавершённые запросы нужно измерять отдельно. QUIC PING не следует считать активностью, продлевающей HTTP/3 application idle timeout.
 
 ## Docker Compose
 
@@ -233,9 +274,11 @@ quic-go и в прокси, и в Caddy хочет UDP-буферы около 7
 
 ## Метрики
 
-`GET /metrics` на admin-порту отдаёт метрики в текстовом формате Prometheus, его же читают VictoriaMetrics и vmagent. Гистограммы классические, с бакетами `le`, так что `histogram_quantile` работает и в PromQL, и в MetricsQL. Admin-порт не нужно публиковать наружу: в Kubernetes метрики собирают прямо с pod'ов, в Compose и systemd порт слушает только `127.0.0.1`.
+`GET /metrics` на admin-порту отдаёт метрики в текстовом формате Prometheus, его же читают VictoriaMetrics и vmagent. Гистограммы классические, с бакетами `le`, так что `histogram_quantile` работает и в PromQL, и в MetricsQL. Без явной настройки admin слушает `127.0.0.1:9090`; systemd использует тот же bind. Container-конфиги явно задают `:9090`: Compose публикует этот порт только на loopback хоста, Kubernetes защищает его NetworkPolicy. Короткие admin-ответы имеют абсолютный write timeout, равный `server.write_idle_timeout`.
 
-Аутентификации на admin-порту нет, поэтому в кластере его видит любой pod: `/metrics` называет домены и бакеты из конфига. В Helm это закрывает `networkPolicy.enabled` с `metricsFrom`, в kustomize — `NetworkPolicy` из base, ограничивающая 9090 неймспейсом мониторинга. Пробы kubelet идут с ноды и политикой не режутся. Без NetworkPolicy админ-порт открыт для всего кластера.
+Аутентификации на admin-порту нет: `/metrics` называет домены и бакеты из конфига. В Helm policy включена по умолчанию и разрешает admin только источникам из `metricsFrom`; пустой список не разрешает никого. В Kustomize base разрешён namespace `monitoring`. Пробы kubelet с ноды pod'а сохраняют доступ. При отключённой или не поддерживаемой CNI политике admin остаётся доступен по Pod IP.
+
+При обновлении существующей установки: добавь `metricsFrom` с selectors scraper в Helm values. Если запускаешь собственный container-конфиг, явно задай `server.admin.addr: ":9090"` и сетевые ограничения — прежний неявный bind на все интерфейсы заменён loopback. Поставляемые Compose/Kubernetes конфиги уже учитывают это изменение.
 
 | Метрика | Тип | Лейблы | Что показывает |
 |---|---|---|---|
@@ -243,8 +286,11 @@ quic-go и в прокси, и в Caddy хочет UDP-буферы около 7
 | `dumbwaiter_http_request_duration_seconds` | histogram | `listener`, `host` | время ответа вместе с передачей тела |
 | `dumbwaiter_http_response_bytes_total` | counter | `listener`, `host` | отданные байты тела ответа |
 | `dumbwaiter_http_requests_in_flight` | gauge | `listener` | запросы в обработке, включая идущие скачивания |
+| `dumbwaiter_admission_rejected_total` | counter | `host`, `scope` | отказы до обращения к S3; `scope`: `global` или `site` |
+| `dumbwaiter_lookup_timeouts_total` | counter | `host` | превышение общего бюджета поиска объекта |
 | `dumbwaiter_s3_requests_total` | counter | `bucket`, `method`, `code` | запросы к S3 |
 | `dumbwaiter_s3_access_denied_masked_total` | counter | `bucket` | ответы S3 `403 AccessDenied`, отданные клиенту как `404` |
+| `dumbwaiter_http_response_outcomes_total` | counter | `listener`, `host`, `outcome` | локальное завершение передачи независимо от HTTP status |
 | `dumbwaiter_s3_request_duration_seconds` | histogram | `bucket`, `method` | время до заголовков ответа S3 |
 | `dumbwaiter_tls_certificate_expiration_timestamp_seconds` | gauge | `cert` | `NotAfter` загруженного сертификата в unix time |
 | `dumbwaiter_tls_certificate_reloads_total` | counter | | перечитывания, после которых сертификаты сменились |
@@ -253,11 +299,13 @@ quic-go и в прокси, и в Caddy хочет UDP-буферы около 7
 
 Рядом лежат стандартные `go_*` и `process_*`.
 
-`listener` принимает значения `http`, `https` и `http3`, `proto` — `HTTP/1`, `HTTP/2` и `HTTP/3`, `method` — `GET`, `HEAD` и `OTHER`. В `host` попадают только хосты из конфига, запросы с любым другим `Host` идут как `unknown`, иначе сканер с выдуманными доменами раздул бы число серий. `code` у S3 равен статусу ответа, а если ответа не было — `error`, `timeout` или `canceled`. `canceled` значит, что клиент ушёл раньше, чем ответил S3: такие запросы считаются, но в гистограмму не попадают, потому что ничего не говорят о задержке хранилища.
+`outcome` принимает значения `complete`, `aborted`, `write_error`, `canceled`, `panic`. `aborted` означает явное прерывание ответа (в частности, при ошибке чтения S3 body), `write_error` — обнаруженную ошибку записи, deadline или flush; отмена request context имеет приоритет и считается `canceled`. `complete` означает завершение handler и flush без обнаруженной ошибки, но не подтверждение получения данных клиентом. Метрики и access log сохраняются также при abort/panic; HTTP `code=0` означает, что статус не был передан нижележащему writer. Отправленный `200` может сочетаться с ошибочным outcome, поэтому только по доле HTTP 5xx судить об успешности скачиваний нельзя.
+
+`listener` принимает значения `http`, `https` и `http3`, `proto` — `HTTP/1`, `HTTP/2` и `HTTP/3`, `method` — `GET`, `HEAD` и `OTHER`. В `host` попадают только хосты из конфига, запросы с любым другим `Host` идут как `unknown`, иначе сканер с выдуманными доменами раздул бы число серий. `code` у S3 равен статусу ответа, а если ответа не было — `error`, `timeout` или `canceled`. `canceled` значит, что клиент ушёл раньше, чем ответил S3: такие запросы считаются, но в гистограмму не попадают. Истечение lookup budget считается `timeout`; оно может быть суммой нескольких последовательных lookup, а не медленным ответом одного S3-запроса.
 
 `dumbwaiter_http_request_duration_seconds` меряет ответ целиком, поэтому большой файл, отданный медленному клиенту, растягивает хвост. Задержку самого хранилища честнее смотреть по `dumbwaiter_s3_request_duration_seconds`. `502` в `dumbwaiter_http_requests_total` почти всегда означает проблему с S3, подробности с кодом ошибки S3 лежат в логе.
 
-`dumbwaiter_s3_access_denied_masked_total` — про права, а не про контент. Без `s3:ListBucket` отсутствующий ключ даёт `403 AccessDenied` вместо `404`, и прокси отвечает `404`, чтобы не выдавать, что лежит в бакете. Рост этой метрики означает, что кто-то сузил политику бакета или ключи потеряли права; в логе такие ответы идут на уровне `warn`.
+`dumbwaiter_s3_access_denied_masked_total` не различает обычный miss и потерю прав: без `s3:ListBucket` отсутствующий ключ также даёт `403 AccessDenied`. Рост метрики может быть следствием обхода сайта сканером. Для обнаружения проблем доступа нужна внешняя синтетическая проверка заведомо существующего объекта: GET конкретного файла без SPA/custom-404 fallback, проверка статуса и ожидаемого содержимого. Проверяй каждый важный backend; не подключай эту проверку к liveness, чтобы отказ S3 не перезапускал все реплики. Для HEAD S3 не возвращает XML-код ошибки, поэтому классификация 403 ещё менее точна.
 
 В Helm сбор включается одним из флагов:
 
@@ -294,7 +342,7 @@ histogram_quantile(0.99, sum by (bucket, le) (rate(dumbwaiter_s3_request_duratio
 # сертификат истекает меньше чем через 14 дней
 dumbwaiter_tls_certificate_expiration_timestamp_seconds - time() < 14 * 86400
 
-# S3 отдаёт 403 на отсутствующие ключи: похоже на сломанную политику бакета
+# Информационный сигнал: маскируемые 403, не самостоятельный IAM alert
 sum by (bucket) (rate(dumbwaiter_s3_access_denied_masked_total[5m])) > 0
 ```
 

@@ -28,7 +28,7 @@ sites:
 		t.Fatal(err)
 	}
 
-	if cfg.Server.HTTP.Addr != ":8080" || cfg.Server.Admin.Addr != ":9090" {
+	if cfg.Server.HTTP.Addr != ":8080" || cfg.Server.Admin.Addr != "127.0.0.1:9090" {
 		t.Errorf("listener defaults not applied: %+v", cfg.Server)
 	}
 	if cfg.Server.ShutdownDelay != 5*time.Second {

@@ -2,6 +2,8 @@
 # ./certs/<name>/tls.crt and tls.key and must be readable by uid or gid 65532.
 # Full reference: config.example.yaml in the repository root.
 server:
+  # Docker publishes this on the host's loopback only.
+  admin: {addr: ":9090"}
   http:
     redirect_to_https: true
   https:

@@ -52,6 +52,7 @@ type objectStore interface {
 
 type Handler struct {
 	sites map[string]*site
+	slots chan struct{}
 }
 
 type site struct {
@@ -60,11 +61,12 @@ type site struct {
 	headers http.Header
 	metrics *metrics.Metrics
 	log     *slog.Logger
+	slots   chan struct{}
 }
 
 func New(cfg *config.Config, m *metrics.Metrics, log *slog.Logger) (*Handler, error) {
 	clients := map[config.S3]*s3.Client{}
-	h := &Handler{sites: map[string]*site{}}
+	h := &Handler{sites: map[string]*site{}, slots: make(chan struct{}, cfg.Server.MaxInFlight)}
 
 	for _, sc := range cfg.Sites {
 		storage := sc.Storage(cfg.S3)
@@ -95,6 +97,7 @@ func newSite(cfg config.Site, store objectStore, m *metrics.Metrics, log *slog.L
 		headers: hdr,
 		metrics: m,
 		log:     log.With("bucket", cfg.Bucket),
+		slots:   make(chan struct{}, cfg.MaxInFlight),
 	}
 }
 
@@ -115,10 +118,43 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	// Reserve the site's slot first: a saturated site must not occupy global
+	// slots even briefly. Both limits remain held until streaming finishes.
+	select {
+	case s.slots <- struct{}{}:
+		defer func() { <-s.slots }()
+	default:
+		s.reject(w, r, "site")
+		return
+	}
+	select {
+	case h.slots <- struct{}{}:
+		defer func() { <-h.slots }()
+	default:
+		s.reject(w, r, "global")
+		return
+	}
 	s.serve(w, r)
+	// A small response can still be buffered here. Hold both admission slots
+	// until it has been flushed, including HTTP/2 flow-control backpressure.
+	if r.Context().Err() != nil {
+		return
+	}
+	if err := http.NewResponseController(w).Flush(); err != nil {
+		panic(http.ErrAbortHandler)
+	}
+}
+
+func (s *site) reject(w http.ResponseWriter, r *http.Request, scope string) {
+	s.metrics.AdmissionRejected(config.NormalizeHost(r.Host), scope)
+	w.Header().Set("Retry-After", "1")
+	w.Header().Set("Cache-Control", "no-store")
+	http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 }
 
 func (s *site) serve(w http.ResponseWriter, r *http.Request) {
+	r, budget := newLookup(r, s.cfg.LookupTimeout)
+	defer budget.close()
 	for k := range s.headers {
 		w.Header().Set(k, s.headers.Get(k))
 	}
@@ -136,19 +172,23 @@ func (s *site) serve(w http.ResponseWriter, r *http.Request) {
 	if isDir {
 		key = s.cfg.Prefix + dirPrefix(rel) + s.cfg.Index
 	}
-	if s.tryServe(w, r, key, http.StatusOK) {
+	if s.tryServe(w, r, budget, key, http.StatusOK) {
 		return
 	}
 
 	// /docs without a slash, but docs/index.html exists: redirect the way
 	// nginx and S3 website hosting do, so relative links keep working.
-	if !isDir {
+	if !isDir && s.cfg.DirectoryRedirectEnabled() {
 		resp, ok := s.fetch(w, r, http.MethodHead, s.cfg.Prefix+rel+"/"+s.cfg.Index, nil)
 		if !ok {
 			return
 		}
 		if resp != nil {
 			resp.Body.Close()
+			budget.finish()
+			if s.lookupFailed(w, r) {
+				return
+			}
 			loc := (&url.URL{Path: "/" + rel + "/", RawQuery: r.URL.RawQuery}).String()
 			http.Redirect(w, r, loc, http.StatusMovedPermanently)
 			return
@@ -157,22 +197,25 @@ func (s *site) serve(w http.ResponseWriter, r *http.Request) {
 
 	// SPA routes look like /users/42, missing assets like /app.js.
 	// Only the former falls back to the root index.
-	if s.cfg.SPA && path.Ext(rel) == "" && s.tryServe(w, r, s.cfg.Prefix+s.cfg.Index, http.StatusOK) {
+	if s.cfg.SPA && path.Ext(rel) == "" && key != s.cfg.Prefix+s.cfg.Index && s.tryServe(w, r, budget, s.cfg.Prefix+s.cfg.Index, http.StatusOK) {
 		return
 	}
 
-	if s.cfg.NotFound != "" && s.tryServe(w, r, s.cfg.Prefix+s.cfg.NotFound, http.StatusNotFound) {
+	if s.cfg.NotFound != "" && key != s.cfg.Prefix+s.cfg.NotFound && s.tryServe(w, r, budget, s.cfg.Prefix+s.cfg.NotFound, http.StatusNotFound) {
 		return
 	}
 
-	http.Error(w, "not found", http.StatusNotFound)
+	budget.finish()
+	if !s.lookupFailed(w, r) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}
 }
 
 // tryServe writes the object to the client and reports true, or reports
 // false when the object does not exist and nothing was written yet.
 // status is the code to send for a found object: 200 for regular content,
 // 404 for the error page.
-func (s *site) tryServe(w http.ResponseWriter, r *http.Request, key string, status int) bool {
+func (s *site) tryServe(w http.ResponseWriter, r *http.Request, budget *lookup, key string, status int) bool {
 	errorPage := status != http.StatusOK
 
 	var hdr http.Header
@@ -187,6 +230,10 @@ func (s *site) tryServe(w http.ResponseWriter, r *http.Request, key string, stat
 		return false
 	}
 	defer resp.Body.Close()
+	budget.finish()
+	if s.lookupFailed(w, r) {
+		return true
+	}
 
 	switch resp.StatusCode {
 	case http.StatusPreconditionFailed, http.StatusRequestedRangeNotSatisfiable:
@@ -216,8 +263,13 @@ func (s *site) tryServe(w http.ResponseWriter, r *http.Request, key string, stat
 	if r.Method == http.MethodHead || status == http.StatusNotModified {
 		return true
 	}
-	if _, err := io.Copy(w, resp.Body); err != nil && r.Context().Err() == nil {
-		s.log.Warn("copy response body", "key", key, "err", err)
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		if r.Context().Err() == nil {
+			s.log.Warn("copy response body", "key", key, "err", err)
+		}
+		// Headers are committed. Terminate the connection / reset the stream
+		// so a truncated chunked body cannot look like a complete response.
+		panic(http.ErrAbortHandler)
 	}
 	return true
 }
@@ -226,10 +278,12 @@ func (s *site) tryServe(w http.ResponseWriter, r *http.Request, key string, stat
 // exists, (nil, true) when it does not, and (nil, false) when the request
 // failed and an error response has already been written.
 func (s *site) fetch(w http.ResponseWriter, r *http.Request, method, key string, hdr http.Header) (*http.Response, bool) {
+	if s.lookupFailed(w, r) {
+		return nil, false
+	}
 	resp, err := s.store.Do(r.Context(), method, s.cfg.Bucket, key, hdr)
 	if err != nil {
-		if errors.Is(r.Context().Err(), context.Canceled) {
-			// The client went away, nobody is left to answer.
+		if s.lookupFailed(w, r) {
 			return nil, false
 		}
 		s.log.Error("s3 request failed", "key", key, "err", err)
@@ -252,19 +306,40 @@ func (s *site) fetch(w http.ResponseWriter, r *http.Request, method, key string,
 		// NoSuchKey. Other 403 codes mean broken credentials or clock skew.
 		// HEAD responses carry no body, so the code is empty there.
 		code := s3.ErrorCode(resp)
+		if s.lookupFailed(w, r) {
+			return nil, false
+		}
 		if code == "AccessDenied" || code == "" {
-			// Served as 404 so the bucket contents do not leak, but this is
-			// still a permission problem worth an alert, not a missing key.
+			// Preserve the public 404. This can be an ordinary missing key
+			// without ListBucket, or a permissions problem; the metric is ambiguous.
 			s.metrics.S3AccessDeniedMasked(s.cfg.Bucket)
 			s.log.Warn("s3 denied access, serving not found", "key", key, "code", code)
 			return nil, true
 		}
 		s.log.Error("s3 rejected request", "key", key, "status", resp.StatusCode, "code", code)
 	default:
-		s.log.Error("unexpected s3 response", "key", key, "status", resp.StatusCode, "code", s3.ErrorCode(resp))
+		code := s3.ErrorCode(resp)
+		if s.lookupFailed(w, r) {
+			return nil, false
+		}
+		s.log.Error("unexpected s3 response", "key", key, "status", resp.StatusCode, "code", code)
 	}
 	http.Error(w, "bad gateway", http.StatusBadGateway)
 	return nil, false
+}
+
+func (s *site) lookupFailed(w http.ResponseWriter, r *http.Request) bool {
+	cause := context.Cause(r.Context())
+	if cause == nil {
+		return false
+	}
+	if errors.Is(cause, context.DeadlineExceeded) {
+		s.metrics.LookupTimeout(config.NormalizeHost(r.Host))
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "gateway timeout", http.StatusGatewayTimeout)
+	}
+	// A canceled client no longer needs a response.
+	return true
 }
 
 // fixContentType replaces the generic type that S3 assigns to objects

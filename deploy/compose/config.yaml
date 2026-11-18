@@ -1,6 +1,8 @@
 # dumbwaiter behind Caddy (compose.yaml): plain HTTP on :8080, Caddy holds
 # the certificates. Full reference: config.example.yaml in the repository root.
 server:
+  # Docker publishes this on the host's loopback only.
+  admin: {addr: ":9090"}
   # How long to keep serving after SIGTERM. A single host has no load
   # balancer to wait for, the default 5s only slows down restarts.
   shutdown_delay: 1s

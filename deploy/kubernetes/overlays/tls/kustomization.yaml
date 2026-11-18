@@ -18,3 +18,12 @@ configMapGenerator:
 
 patches:
   - path: deployment-patch.yaml
+  - target:
+      kind: NetworkPolicy
+      name: dumbwaiter-admin
+    patch: |-
+      - op: add
+        path: /spec/ingress/1/ports/-
+        value:
+          port: 8443
+          protocol: UDP

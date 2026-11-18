@@ -1,8 +1,8 @@
 {{- if .Values.networkPolicy.enabled }}
 # The admin port has no authentication and exposes the configured host and
 # bucket names, so in a cluster keep it reachable only for the scraper.
-# Without metricsFrom it stays open to any pod; kubelet probes come from the
-# node and are not affected by this policy either way.
+# Without metricsFrom no admin ingress rule is emitted. Kubelet probes from
+# the pod's node are unaffected; the CNI must enforce NetworkPolicy.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -19,19 +19,23 @@ spec:
     - Egress
     {{- end }}
   ingress:
+    {{- with .Values.networkPolicy.metricsFrom }}
     - ports:
-        - port: {{ .Values.containerPorts.admin }}
+        - port: {{ $.Values.containerPorts.admin }}
           protocol: TCP
-      {{- with .Values.networkPolicy.metricsFrom }}
       from:
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+    {{- end }}
     - ports:
         - port: {{ .Values.containerPorts.http }}
           protocol: TCP
         {{- if .Values.tls.enabled }}
         - port: {{ .Values.containerPorts.https }}
           protocol: TCP
+        {{- if .Values.tls.http3 }}
+        - port: {{ .Values.containerPorts.https }}
+          protocol: UDP
+        {{- end }}
         {{- end }}
   {{- if .Values.networkPolicy.egress.enabled }}
   {{- if not .Values.networkPolicy.egress.rules }}
