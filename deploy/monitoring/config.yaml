@@ -14,7 +14,7 @@ s3:
   timeout: 2s
   read_timeout: 2s
 sites:
-  - hosts: [localhost, dumbwaiter]
+  - hosts: [localhost, dumbwaiter, loadtest.local]
     bucket: demo
     max_in_flight: 64
     lookup_timeout: 3s

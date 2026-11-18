@@ -7,7 +7,46 @@ x-defaults: &defaults
     driver: json-file
     options: {max-size: 10m, max-file: "3"}
 
+x-k6: &k6
+  <<: *defaults
+  image: grafana/k6:2.4.0
+  # Finite runs preserve their exit status; no automatic restart after 72h/failure.
+  restart: "no"
+  entrypoint: ["/bin/sh", "/scripts/entrypoint.sh"]
+  command: ["run", "--quiet", "--out", "experimental-prometheus-rw", "/scripts/load.js"]
+  environment: &k6-env
+    BASE_URL: http://dumbwaiter:8080
+    HOST_HEADER: loadtest.local
+    K6_PROMETHEUS_RW_SERVER_URL: http://victoriametrics:8428/api/v1/write
+    K6_PROMETHEUS_RW_PUSH_INTERVAL: 5s
+    # k6 2.4 native-histogram stale markers mix samples and histograms in
+    # one TimeSeries; VM rejects that final batch. Use natural staleness.
+    K6_PROMETHEUS_RW_STALE_MARKERS: "false"
+    K6_FEATURES: native-histograms
+  volumes: ["./k6:/scripts:ro"]
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  stop_grace_period: 20s
+  depends_on: [dumbwaiter, victoriametrics]
+
 services:
+  k6-background:
+    <<: *k6
+    profiles: [load]
+    environment:
+      <<: *k6-env
+      LOAD_PROFILE: background
+
+  k6-run:
+    <<: *k6
+    profiles: [tools]
+    environment:
+      <<: *k6-env
+      LOAD_PROFILE: "${LOAD_PROFILE:-smoke}"
+      LOAD_TIME_SCALE: "${LOAD_TIME_SCALE:-1}"
+
   dumbwaiter:
     <<: *defaults
     build:

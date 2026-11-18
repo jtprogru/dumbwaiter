@@ -169,6 +169,57 @@ def build():
     panel(d, "Firing alerts", 'ALERTS{alertstate="firing"}', kind="table")
     dashboards["monitoring"] = d
 
+    d = dashboard("load", "Load test / k6", "Local fixture traffic, NOT real users: 85% GET, 10% HEAD, 4% expected 404, 1% expected 502. One request per iteration. Background is a 72-hour open-model wave; manual runs are separate test IDs.")
+    d["templating"]["list"] = [
+        variable("profile", 'label_values(k6_load_target_rps{job="k6"}, profile)'),
+        variable("testid", 'label_values(k6_load_target_rps{job="k6",profile=~"$profile"}, testid)'),
+    ]
+    k6 = 'job="k6",service="dumbwaiter",profile=~"$profile",testid=~"$testid"'
+    traffic = k6 + ',scenario="traffic"'
+    server = 'job="dumbwaiter",host="loadtest.local"'
+    runs = "profile,testid"
+    panel(d, "Planned vs achieved RPS", [
+        ('sum(' + metric("k6_load_target_rps", k6) + ')', "target: selected runs"),
+        (rate("k6_http_reqs_total", traffic), "client: selected runs"),
+        (rate("dumbwaiter_http_requests_total", server), "server: ALL load runs")], "reqps",
+        "Target sampled on iterations; achieved RPS is a rolling completion rate, so ramps lag. Server = ALL requests with host=loadtest.local including setup, NOT filtered by testid/profile. Select All to compare totals; concurrent tests add load.")
+    panel(d, "Unexpected status or incomplete body", metric("k6_load_unexpected_response_rate", k6), "percentunit",
+          "k6 Rate = cumulative fraction since this run started, NOT a counter. Expected fixture 404/502 are accepted; wrong body or transport failure is not. Do not apply rate() to this gauge.")
+    panel(d, "p99 latency: client vs server", [
+        (f'histogram_quantile(0.99, {rate("k6_http_req_duration_seconds_bucket", traffic, "vmrange," + runs)})', "client {{profile}} {{testid}}"),
+        (quantile("dumbwaiter_http_request_duration_seconds", server, 0.99), "server: ALL load runs")], "s",
+        "Client: native histogram -> vmrange, send + wait + receive (not connect/blocked). Server: classic le, whole handler/body/flush for ALL load runs. Do not subtract quantiles to claim network latency: populations and timing boundaries differ.")
+    panel(d, "Dropped iterations", rate("k6_dropped_iterations_total", traffic, runs) + ' or (0 * ' + rate("k6_iterations_total", traffic, runs) + ')', "ops",
+          "Not enough VUs to schedule the requested rate. Zero only if iteration telemetry exists; absent load is not a healthy test. maxVUs=400, request timeout=10s.")
+    panel(d, "Request mix / status", rate("k6_http_reqs_total", traffic, "profile,testid,name,status"), "reqps",
+          "85/10/4/1 distribution per 100 iterations. A 1% HTTP 502 rate is intentionally injected by the fixture, not an unexpected k6 failure.")
+    panel(d, "Active / allocated VUs", [
+        (metric("k6_vus", k6), "active {{profile}} {{testid}}"),
+        (metric("k6_vus_max", k6), "allocated {{profile}} {{testid}}")],
+        description="VU counts are not RPS. Active VUs can be near zero for fast requests at the sampling instant.")
+    panel(d, "Age of last target sample", 'time() - max by (profile,testid)(timestamp(' + metric("k6_load_target_rps", k6) + '))', "s",
+          "Normally near the 5s push interval plus ingestion delay. No stale-marker batch: native histograms with stale markers are incompatible with the pinned VM receiver. After stop, use freshness and container exit status; old series expire naturally.")
+    panel(d, "Received throughput", rate("k6_data_received_total", traffic, runs), "Bps")
+    panel(d, "Where the client waits (p95)", [
+        (f'histogram_quantile(0.95, {rate("k6_http_req_" + phase + "_seconds_bucket", traffic, "vmrange," + runs)})', phase + " {{profile}} {{testid}}")
+        for phase in ["blocked", "connecting", "sending", "waiting", "receiving"]], "s",
+        "blocked = connection-slot wait; connecting = TCP; waiting = TTFB. Percentiles of phases are not additive. Histograms aggregate per selected run, not a max of precomputed p95 gauges.")
+    panel(d, "Errors: client expectations vs server HTTP status", [
+        (ratio("k6_http_reqs_total", traffic, 'expected_response="false"', runs), "unexpected k6 {{profile}} {{testid}}"),
+        (ratio("dumbwaiter_http_requests_total", server, 'code=~"5.."', ""), "server 5xx: ALL load runs")], "percentunit",
+        "The fixture intentionally returns about 1% 502, counted as server 5xx but expected by k6. Client curve includes network errors. Separate body validation is shown in the cumulative unexpected-response panel.")
+    panel(d, "Server CPU during the test (all traffic)", rate("process_cpu_seconds_total", 'job="dumbwaiter"'), "short",
+          "CPU seconds/second = cores, not percent of quota. Server runtime metrics include probes and other hosts; testid/profile cannot filter process metrics.")
+    panel(d, "Server RSS during the test (all traffic)", 'process_resident_memory_bytes{job="dumbwaiter"}', "bytes")
+    panel(d, "Server requests in flight (all traffic)", 'dumbwaiter_http_requests_in_flight{job="dumbwaiter"}', description="Not admission-slot occupancy; includes every host/listener. Correlate with latency and rejections.")
+    panel(d, "Admission rejections for load Host", rate("dumbwaiter_admission_rejected_total", server, "scope"), "reqps",
+          "Empty before first rejection. A 503 here is NOT the expected fixture 502; it fails k6 correctness thresholds.")
+    panel(d, "Client RPS by profile / run", rate("k6_http_reqs_total", traffic, runs), "reqps",
+          "Separate background and foreground contributions to the combined load; setup excluded.")
+    for p in d["panels"]:
+        if p["title"].startswith("Server "):
+            p["fieldConfig"]["defaults"]["links"] = [{"title": "Runtime / TLS", "url": "/d/dumbwaiter-runtime?${__url_time_range}"}]
+    dashboards["load"] = d
     return dashboards
 
 

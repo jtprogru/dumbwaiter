@@ -201,12 +201,16 @@ obs-up: ## Build app and start local monitoring (Grafana on localhost:3333)
 	@echo 'Targets: http://localhost:8429/targets; alerts: http://localhost:8880'
 	@echo 'Run make obs-smoke to verify metrics, logs, dashboards and synthetic probe.'
 
-obs-down: ## Stop local monitoring, retaining data volumes
-	$(OBS_COMPOSE) down
+obs-down: ## Stop local monitoring and k6, retaining data volumes
+	$(OBS_COMPOSE) --profile load --profile tools down
 
 obs-check: ## Validate monitoring configs, generated dashboards and alert unit tests
 	$(OBS_COMPOSE) config --quiet
 	python3 scripts/monitoring-dashboards.py --check
+	$(OBS_COMPOSE) run --rm --no-deps k6-run run --quiet /scripts/profiles.test.js
+	@for profile in smoke steady spike background; do \
+		$(OBS_COMPOSE) run --rm --no-deps -e LOAD_PROFILE=$$profile -e LOAD_TIME_SCALE=1 k6-run inspect --include-system-env-vars /scripts/load.js > /dev/null || exit 1; \
+	done
 	$(OBS_COMPOSE) run --rm --no-deps vmagent -promscrape.config=/etc/vmagent/scrape.yaml -promscrape.config.dryRun
 	$(OBS_COMPOSE) run --rm --no-deps vmalert -rule=/etc/vmalert/rules.yaml -dryRun
 	$(OBS_COMPOSE) run --rm --no-deps vector validate --no-environment /etc/vector/vector.yaml
@@ -217,6 +221,35 @@ obs-smoke: ## End-to-end monitoring checks against the running local stack (Pyth
 
 obs-dashboards: ## Regenerate committed Grafana dashboards
 	python3 scripts/monitoring-dashboards.py
+
+obs-load-up: obs-up ## Start opt-in 72-hour k6 source, waves between 10 and 200 RPS
+	$(OBS_COMPOSE) up -d --no-deps k6-background
+	@echo 'Load test dashboard: http://localhost:3333/d/dumbwaiter-load'
+
+obs-load-down: ## Stop only the background k6 source
+	$(OBS_COMPOSE) stop k6-background
+
+obs-load-check: ## Short E2E checks of k6 profiles and remote write (requires obs-up)
+	DOCKER="$(DOCKER)" python3 scripts/monitoring-load-check.py
+
+obs-load-logs: ## Follow the background k6 run and its final result
+	$(OBS_COMPOSE) logs --tail=50 -f k6-background
+
+LOAD_PROFILE ?= smoke
+LOAD_TIME_SCALE ?= 1
+
+test-load: ## Run containerized k6: LOAD_PROFILE=smoke|steady|spike (requires obs-up)
+	@case "$(LOAD_PROFILE)" in smoke|steady|spike) ;; *) echo 'LOAD_PROFILE must be smoke, steady or spike'; exit 1 ;; esac
+	LOAD_PROFILE=$(LOAD_PROFILE) LOAD_TIME_SCALE=$(LOAD_TIME_SCALE) $(OBS_COMPOSE) run --rm --no-deps k6-run
+
+test-load-smoke: ## 30 seconds at 10 RPS
+	$(MAKE) test-load LOAD_PROFILE=smoke
+
+test-load-steady: ## 5 minutes at 100 RPS
+	$(MAKE) test-load LOAD_PROFILE=steady
+
+test-load-spike: ## 3 minutes: 10 -> 200 RPS, plateau, recovery to 10 RPS
+	$(MAKE) test-load LOAD_PROFILE=spike
 
 # --- tools ------------------------------------------------------------------
 
@@ -240,4 +273,5 @@ clean: ## Remove build artifacts
 .PHONY: help run build tidy fmt vet fmt-check tidy-check test test-race lint lint-fix govulncheck \
         check-configs ci ci-full set-version docker-build docker-push manifests diff deploy \
         helm-lint check-network-policies check-loadtest compose-config tools clean \
-        obs-up obs-down obs-check obs-smoke obs-dashboards
+        obs-up obs-down obs-check obs-smoke obs-dashboards \
+        obs-load-up obs-load-down obs-load-logs obs-load-check test-load test-load-smoke test-load-steady test-load-spike

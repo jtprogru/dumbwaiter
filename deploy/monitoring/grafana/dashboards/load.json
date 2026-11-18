@@ -1,0 +1,939 @@
+{
+  "uid": "dumbwaiter-load",
+  "title": "dumbwaiter · Load test / k6",
+  "description": "Local fixture traffic, NOT real users: 85% GET, 10% HEAD, 4% expected 404, 1% expected 502. One request per iteration. Background is a 72-hour open-model wave; manual runs are separate test IDs.",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "tags": [
+    "dumbwaiter"
+  ],
+  "timezone": "browser",
+  "refresh": "15s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "graphTooltip": 1,
+  "links": [
+    {
+      "title": "dumbwaiter",
+      "type": "dashboards",
+      "tags": [
+        "dumbwaiter"
+      ],
+      "keepTime": true,
+      "includeVars": true
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "profile",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "victoriametrics"
+        },
+        "query": {
+          "query": "label_values(k6_load_target_rps{job=\"k6\"}, profile)",
+          "refId": "profile"
+        },
+        "definition": "label_values(k6_load_target_rps{job=\"k6\"}, profile)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "testid",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "victoriametrics"
+        },
+        "query": {
+          "query": "label_values(k6_load_target_rps{job=\"k6\",profile=~\"$profile\"}, testid)",
+          "refId": "testid"
+        },
+        "definition": "label_values(k6_load_target_rps{job=\"k6\",profile=~\"$profile\"}, testid)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Planned vs achieved RPS",
+      "description": "Target sampled on iterations; achieved RPS is a rolling completion rate, so ramps lag. Server = ALL requests with host=loadtest.local including setup, NOT filtered by testid/profile. Select All to compare totals; concurrent tests add load.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(k6_load_target_rps{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\"})",
+          "legendFormat": "target: selected runs",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(k6_http_reqs_total{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\",scenario=\"traffic\"}[$__rate_interval]))",
+          "legendFormat": "client: selected runs",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(rate(dumbwaiter_http_requests_total{job=\"dumbwaiter\",host=\"loadtest.local\"}[$__rate_interval]))",
+          "legendFormat": "server: ALL load runs",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Unexpected status or incomplete body",
+      "description": "k6 Rate = cumulative fraction since this run started, NOT a counter. Expected fixture 404/502 are accepted; wrong body or transport failure is not. Do not apply rate() to this gauge.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "k6_load_unexpected_response_rate{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\"}",
+          "legendFormat": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "p99 latency: client vs server",
+      "description": "Client: native histogram -> vmrange, send + wait + receive (not connect/blocked). Server: classic le, whole handler/body/flush for ALL load runs. Do not subtract quantiles to claim network latency: populations and timing boundaries differ.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99, sum by (vmrange,profile,testid)(rate(k6_http_req_duration_seconds_bucket{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\",scenario=\"traffic\"}[$__rate_interval])))",
+          "legendFormat": "client {{profile}} {{testid}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.99, sum by (le)(rate(dumbwaiter_http_request_duration_seconds_bucket{job=\"dumbwaiter\",host=\"loadtest.local\"}[$__rate_interval])))",
+          "legendFormat": "server: ALL load runs",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Dropped iterations",
+      "description": "Not enough VUs to schedule the requested rate. Zero only if iteration telemetry exists; absent load is not a healthy test. maxVUs=400, request timeout=10s.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (profile,testid)(rate(k6_dropped_iterations_total{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\",scenario=\"traffic\"}[$__rate_interval])) or (0 * sum by (profile,testid)(rate(k6_iterations_total{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\",scenario=\"traffic\"}[$__rate_interval])))",
+          "legendFormat": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Request mix / status",
+      "description": "85/10/4/1 distribution per 100 iterations. A 1% HTTP 502 rate is intentionally injected by the fixture, not an unexpected k6 failure.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (profile,testid,name,status)(rate(k6_http_reqs_total{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\",scenario=\"traffic\"}[$__rate_interval]))",
+          "legendFormat": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Active / allocated VUs",
+      "description": "VU counts are not RPS. Active VUs can be near zero for fast requests at the sampling instant.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "k6_vus{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\"}",
+          "legendFormat": "active {{profile}} {{testid}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "expr": "k6_vus_max{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\"}",
+          "legendFormat": "allocated {{profile}} {{testid}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Age of last target sample",
+      "description": "Normally near the 5s push interval plus ingestion delay. No stale-marker batch: native histograms with stale markers are incompatible with the pinned VM receiver. After stop, use freshness and container exit status; old series expire naturally.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - max by (profile,testid)(timestamp(k6_load_target_rps{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\"}))",
+          "legendFormat": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Received throughput",
+      "description": "",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (profile,testid)(rate(k6_data_received_total{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\",scenario=\"traffic\"}[$__rate_interval]))",
+          "legendFormat": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Where the client waits (p95)",
+      "description": "blocked = connection-slot wait; connecting = TCP; waiting = TTFB. Percentiles of phases are not additive. Histograms aggregate per selected run, not a max of precomputed p95 gauges.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (vmrange,profile,testid)(rate(k6_http_req_blocked_seconds_bucket{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\",scenario=\"traffic\"}[$__rate_interval])))",
+          "legendFormat": "blocked {{profile}} {{testid}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (vmrange,profile,testid)(rate(k6_http_req_connecting_seconds_bucket{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\",scenario=\"traffic\"}[$__rate_interval])))",
+          "legendFormat": "connecting {{profile}} {{testid}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.95, sum by (vmrange,profile,testid)(rate(k6_http_req_sending_seconds_bucket{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\",scenario=\"traffic\"}[$__rate_interval])))",
+          "legendFormat": "sending {{profile}} {{testid}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        },
+        {
+          "refId": "D",
+          "expr": "histogram_quantile(0.95, sum by (vmrange,profile,testid)(rate(k6_http_req_waiting_seconds_bucket{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\",scenario=\"traffic\"}[$__rate_interval])))",
+          "legendFormat": "waiting {{profile}} {{testid}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        },
+        {
+          "refId": "E",
+          "expr": "histogram_quantile(0.95, sum by (vmrange,profile,testid)(rate(k6_http_req_receiving_seconds_bucket{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\",scenario=\"traffic\"}[$__rate_interval])))",
+          "legendFormat": "receiving {{profile}} {{testid}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Errors: client expectations vs server HTTP status",
+      "description": "The fixture intentionally returns about 1% 502, counted as server 5xx but expected by k6. Client curve includes network errors. Separate body validation is shown in the cumulative unexpected-response panel.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((sum by (profile,testid)(rate(k6_http_reqs_total{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\",scenario=\"traffic\",expected_response=\"false\"}[$__rate_interval]))) or (0 * sum by (profile,testid)(rate(k6_http_reqs_total{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\",scenario=\"traffic\"}[$__rate_interval])))) / (sum by (profile,testid)(rate(k6_http_reqs_total{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\",scenario=\"traffic\"}[$__rate_interval])) > 0)",
+          "legendFormat": "unexpected k6 {{profile}} {{testid}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        },
+        {
+          "refId": "B",
+          "expr": "((sum(rate(dumbwaiter_http_requests_total{job=\"dumbwaiter\",host=\"loadtest.local\",code=~\"5..\"}[$__rate_interval]))) or (0 * sum(rate(dumbwaiter_http_requests_total{job=\"dumbwaiter\",host=\"loadtest.local\"}[$__rate_interval])))) / (sum(rate(dumbwaiter_http_requests_total{job=\"dumbwaiter\",host=\"loadtest.local\"}[$__rate_interval])) > 0)",
+          "legendFormat": "server 5xx: ALL load runs",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "Server CPU during the test (all traffic)",
+      "description": "CPU seconds/second = cores, not percent of quota. Server runtime metrics include probes and other hosts; testid/profile cannot filter process metrics.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(process_cpu_seconds_total{job=\"dumbwaiter\"}[$__rate_interval]))",
+          "legendFormat": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          },
+          "links": [
+            {
+              "title": "Runtime / TLS",
+              "url": "/d/dumbwaiter-runtime?${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Server RSS during the test (all traffic)",
+      "description": "",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "process_resident_memory_bytes{job=\"dumbwaiter\"}",
+          "legendFormat": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          },
+          "links": [
+            {
+              "title": "Runtime / TLS",
+              "url": "/d/dumbwaiter-runtime?${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 13,
+      "title": "Server requests in flight (all traffic)",
+      "description": "Not admission-slot occupancy; includes every host/listener. Correlate with latency and rejections.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "dumbwaiter_http_requests_in_flight{job=\"dumbwaiter\"}",
+          "legendFormat": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          },
+          "links": [
+            {
+              "title": "Runtime / TLS",
+              "url": "/d/dumbwaiter-runtime?${__url_time_range}"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 14,
+      "title": "Admission rejections for load Host",
+      "description": "Empty before first rejection. A 503 here is NOT the expected fixture 502; it fails k6 correctness thresholds.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (scope)(rate(dumbwaiter_admission_rejected_total{job=\"dumbwaiter\",host=\"loadtest.local\"}[$__rate_interval]))",
+          "legendFormat": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 48,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "title": "Client RPS by profile / run",
+      "description": "Separate background and foreground contributions to the combined load; setup excluded.",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "victoriametrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (profile,testid)(rate(k6_http_reqs_total{job=\"k6\",service=\"dumbwaiter\",profile=~\"$profile\",testid=~\"$testid\",scenario=\"traffic\"}[$__rate_interval]))",
+          "legendFormat": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "victoriametrics"
+          },
+          "editorMode": "code"
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 56,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "No data",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    }
+  ]
+}
