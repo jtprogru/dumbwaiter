@@ -79,6 +79,9 @@ func New(ctx context.Context, cfg *config.Config, sites Sites, m *metrics.Metric
 		return nil, fmt.Errorf("admin listener: %w", err)
 	}
 	s.adminSrv = newHTTPServer(s.adminHandler(), nil)
+	// Admin responses are short, so an absolute write timeout is appropriate.
+	// The public listeners use per-write idle deadlines for large downloads.
+	s.adminSrv.WriteTimeout = sc.WriteIdleTimeout
 
 	if https := sc.HTTPS; https != nil {
 		if s.certs, err = tlsstore.Load(https.Certificates, m, log); err != nil {

@@ -1,4 +1,5 @@
 server:
+  admin: {addr: ":9090"}
   http:
     redirect_to_https: true
   https:

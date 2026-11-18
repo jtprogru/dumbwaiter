@@ -35,9 +35,10 @@ server:
     h3_handshake_idle_timeout: 5s
     h3_max_incoming_streams: 100
 
-  # /healthz, /readyz and /metrics in the Prometheus text format.
+  # /healthz, /readyz and /metrics; no authentication. Loopback by default.
+  # In containers set :9090 explicitly and restrict it at the network layer.
   admin:
-    addr: ":9090"
+    addr: "127.0.0.1:9090"
 
   read_header_timeout: 10s
   # Bounds the whole request, body included, and the drain of an unread body.

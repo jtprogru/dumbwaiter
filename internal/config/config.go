@@ -218,7 +218,7 @@ func expandEnv(root *yaml.Node) error {
 func (c *Config) setDefaults() {
 	s := &c.Server
 	setDefault(&s.HTTP.Addr, ":8080")
-	setDefault(&s.Admin.Addr, ":9090")
+	setDefault(&s.Admin.Addr, "127.0.0.1:9090")
 	setDefault(&s.ReadHeaderTimeout, 10*time.Second)
 	setDefault(&s.ReadTimeout, 30*time.Second)
 	setDefault(&s.WriteIdleTimeout, 30*time.Second)

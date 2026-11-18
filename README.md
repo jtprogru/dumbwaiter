@@ -233,7 +233,7 @@ quic-go и в прокси, и в Caddy хочет UDP-буферы около 7
 
 ## Метрики
 
-`GET /metrics` на admin-порту отдаёт метрики в текстовом формате Prometheus, его же читают VictoriaMetrics и vmagent. Гистограммы классические, с бакетами `le`, так что `histogram_quantile` работает и в PromQL, и в MetricsQL. Admin-порт не нужно публиковать наружу: в Kubernetes метрики собирают прямо с pod'ов, в Compose и systemd порт слушает только `127.0.0.1`.
+`GET /metrics` на admin-порту отдаёт метрики в текстовом формате Prometheus, его же читают VictoriaMetrics и vmagent. Гистограммы классические, с бакетами `le`, так что `histogram_quantile` работает и в PromQL, и в MetricsQL. Без явной настройки admin слушает `127.0.0.1:9090`; systemd использует тот же bind. Container-конфиги явно задают `:9090`: Compose публикует этот порт только на loopback хоста, Kubernetes защищает его NetworkPolicy. Короткие admin-ответы имеют абсолютный write timeout, равный `server.write_idle_timeout`.
 
 Аутентификации на admin-порту нет, поэтому в кластере его видит любой pod: `/metrics` называет домены и бакеты из конфига. В Helm это закрывает `networkPolicy.enabled` с `metricsFrom`, в kustomize — `NetworkPolicy` из base, ограничивающая 9090 неймспейсом мониторинга. Пробы kubelet идут с ноды и политикой не режутся. Без NetworkPolicy админ-порт открыт для всего кластера.
 
