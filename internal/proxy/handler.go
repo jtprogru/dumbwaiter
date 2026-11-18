@@ -135,6 +135,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.serve(w, r)
+	// A small response can still be buffered here. Hold both admission slots
+	// until it has been flushed, including HTTP/2 flow-control backpressure.
+	if r.Context().Err() != nil {
+		return
+	}
+	if err := http.NewResponseController(w).Flush(); err != nil {
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func (s *site) reject(w http.ResponseWriter, r *http.Request, scope string) {

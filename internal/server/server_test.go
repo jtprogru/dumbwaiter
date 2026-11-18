@@ -440,11 +440,11 @@ func TestRecorderRefreshesWriteDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(w.deadlines) != 2 {
-		t.Fatalf("deadlines set %d times, want one per write", len(w.deadlines))
+	if len(w.deadlines) != 4 || !w.deadlines[1].IsZero() || !w.deadlines[3].IsZero() {
+		t.Fatalf("deadlines = %v, want set/clear per write", w.deadlines)
 	}
-	if !w.deadlines[1].After(w.deadlines[0]) {
-		t.Fatalf("second deadline %v is not after the first %v", w.deadlines[1], w.deadlines[0])
+	if !w.deadlines[2].After(w.deadlines[0]) {
+		t.Fatalf("second deadline %v is not after the first %v", w.deadlines[2], w.deadlines[0])
 	}
 }
 

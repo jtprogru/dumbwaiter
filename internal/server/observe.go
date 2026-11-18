@@ -74,6 +74,7 @@ type recorder struct {
 	bytes     int64
 	writeIdle time.Duration
 	err       error
+	flushed   bool
 }
 
 func (r *recorder) WriteHeader(code int) {
@@ -83,7 +84,11 @@ func (r *recorder) WriteHeader(code int) {
 	if r.status == 0 {
 		r.status = code
 	}
+	r.flushed = false
 	r.ResponseWriter.WriteHeader(code)
+	if r.clearDeadline() != nil {
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func (r *recorder) Write(b []byte) (int, error) {
@@ -93,6 +98,7 @@ func (r *recorder) Write(b []byte) (int, error) {
 	if r.status == 0 {
 		r.status = http.StatusOK
 	}
+	r.flushed = false
 	n, err := r.ResponseWriter.Write(b)
 	r.bytes += int64(n)
 	if err == nil && n != len(b) {
@@ -101,7 +107,24 @@ func (r *recorder) Write(b []byte) (int, error) {
 	if err != nil {
 		r.err = err
 	}
-	return n, err
+	return n, r.clearDeadline()
+}
+
+// FlushError lets ResponseController flush inside the proxy's admission scope.
+// Repeated flushes without another write do not repeat a blocking operation.
+func (r *recorder) FlushError() error {
+	if r.err != nil || r.flushed {
+		return r.err
+	}
+	if err := r.refreshDeadline(); err != nil {
+		return err
+	}
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	r.err = http.NewResponseController(r.ResponseWriter).Flush()
+	r.flushed = r.err == nil
+	return r.clearDeadline()
 }
 
 // Unwrap lets http.ResponseController reach the underlying writer.
@@ -114,16 +137,26 @@ func (r *recorder) refreshDeadline() error {
 	return r.err
 }
 
+// A completed downstream operation must not leave a timer running while the
+// next upstream Read is pending. Preserve the first write/deadline error.
+func (r *recorder) clearDeadline() error {
+	if r.writeIdle > 0 {
+		err := http.NewResponseController(r.ResponseWriter).SetWriteDeadline(time.Time{})
+		if r.err == nil {
+			r.err = err
+		}
+	}
+	return r.err
+}
+
 // Flush buffered headers and body while still in ServeHTTP, so errors reach
 // accounting. Keep the deadline through the server's final protocol flush;
 // net/http resets it before reusing an HTTP/1 connection, H2/H3 use streams.
 func (r *recorder) finish() error {
-	if err := r.refreshDeadline(); err != nil {
+	if err := r.FlushError(); err != nil {
 		return err
 	}
-	if r.status == 0 {
-		r.status = http.StatusOK
-	}
-	r.err = http.NewResponseController(r.ResponseWriter).Flush()
-	return r.err
+	// The proxy already flushed admitted responses while holding its slots.
+	// Only arm the deadline for the server's final protocol framing here.
+	return r.refreshDeadline()
 }
