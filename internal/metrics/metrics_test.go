@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,35 @@ func scrape(m *Metrics) string {
 	var b strings.Builder
 	m.WritePrometheus(&b)
 	return b.String()
+}
+
+func TestHandlerExportsFileDescriptorMetrics(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("FD collector assertions cover the supported development and production OSes")
+	}
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	New().Handler().ServeHTTP(w, r)
+	for _, name := range []string{"process_open_fds", "process_max_fds"} {
+		t.Run(name, func(t *testing.T) {
+			var found bool
+			for _, line := range strings.Split(w.Body.String(), "\n") {
+				if value, ok := strings.CutPrefix(line, name+" "); ok {
+					if found {
+						t.Fatalf("duplicate series %s", name)
+					}
+					found = true
+					n, err := strconv.ParseFloat(value, 64)
+					if err != nil || n <= 0 {
+						t.Fatalf("%s = %q, want a positive number", name, value)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("missing %s in /metrics", name)
+			}
+		})
+	}
 }
 
 func TestSeriesEscapesLabelValues(t *testing.T) {

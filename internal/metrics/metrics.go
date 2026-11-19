@@ -47,6 +47,9 @@ func (m *Metrics) Handler() http.Handler {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		m.WritePrometheus(w)
 		vm.WriteProcessMetrics(w)
+		// FD collection is separate in VictoriaMetrics/metrics because it
+		// enumerates descriptors. Without it, FD saturation is invisible.
+		vm.WriteFDMetrics(w)
 	})
 }
 

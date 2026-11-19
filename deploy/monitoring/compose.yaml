@@ -1,0 +1,164 @@
+# Local development only; independent from deploy/compose (production).
+name: dumbwaiter-monitoring
+
+x-defaults: &defaults
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: "3"}
+
+x-k6: &k6
+  <<: *defaults
+  image: grafana/k6:2.4.0
+  # Finite runs preserve their exit status; no automatic restart after 72h/failure.
+  restart: "no"
+  entrypoint: ["/bin/sh", "/scripts/entrypoint.sh"]
+  command: ["run", "--quiet", "--out", "experimental-prometheus-rw", "/scripts/load.js"]
+  environment: &k6-env
+    BASE_URL: http://dumbwaiter:8080
+    HOST_HEADER: loadtest.local
+    K6_PROMETHEUS_RW_SERVER_URL: http://victoriametrics:8428/api/v1/write
+    K6_PROMETHEUS_RW_PUSH_INTERVAL: 5s
+    # k6 2.4 native-histogram stale markers mix samples and histograms in
+    # one TimeSeries; VM rejects that final batch. Use natural staleness.
+    K6_PROMETHEUS_RW_STALE_MARKERS: "false"
+    K6_FEATURES: native-histograms
+  volumes: ["./k6:/scripts:ro"]
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  stop_grace_period: 20s
+  depends_on: [dumbwaiter, victoriametrics]
+
+services:
+  k6-background:
+    <<: *k6
+    profiles: [load]
+    environment:
+      <<: *k6-env
+      LOAD_PROFILE: background
+
+  k6-run:
+    <<: *k6
+    profiles: [tools]
+    environment:
+      <<: *k6-env
+      LOAD_PROFILE: "${LOAD_PROFILE:-smoke}"
+      LOAD_TIME_SCALE: "${LOAD_TIME_SCALE:-1}"
+
+  dumbwaiter:
+    <<: *defaults
+    build:
+      context: ../..
+      args: {VERSION: "${VERSION:-dev}"}
+    command: ["-config", "/etc/dumbwaiter/config.yaml"]
+    ports:
+      - "127.0.0.1:${APP_PORT:-8080}:8080"
+      - "127.0.0.1:${ADMIN_PORT:-9090}:9090"
+    volumes:
+      - ./config.yaml:/etc/dumbwaiter/config.yaml:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 35s
+    depends_on:
+      fixture: {condition: service_started}
+      vector: {condition: service_healthy}
+
+  # Anonymous path-style GET/HEAD fixture, NOT an S3 implementation.
+  fixture:
+    <<: *defaults
+    image: nginx:1.28.0-alpine
+    volumes:
+      - ./fixture/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./fixture/site:/srv/demo:ro
+
+  victoriametrics:
+    <<: *defaults
+    image: victoriametrics/victoria-metrics:v1.156.0
+    command:
+      - -storageDataPath=/storage
+      - -retentionPeriod=7d
+      - -search.latencyOffset=5s
+    ports: ["127.0.0.1:${VM_PORT:-8428}:8428"]
+    volumes: ["metrics-data:/storage"]
+
+  vmagent:
+    <<: *defaults
+    image: victoriametrics/vmagent:v1.156.0
+    command:
+      - -promscrape.config=/etc/vmagent/scrape.yaml
+      - -remoteWrite.url=http://victoriametrics:8428/api/v1/write
+      - -remoteWrite.tmpDataPath=/queue
+      - -remoteWrite.maxDiskUsagePerURL=256MB
+    ports: ["127.0.0.1:${VMAGENT_PORT:-8429}:8429"]
+    volumes:
+      - ./vmagent.yaml:/etc/vmagent/scrape.yaml:ro
+      - metrics-queue:/queue
+    depends_on: [victoriametrics]
+
+  vmalert:
+    <<: *defaults
+    image: victoriametrics/vmalert:v1.156.0
+    command:
+      - -rule=/etc/vmalert/rules.yaml
+      - -datasource.url=http://victoriametrics:8428
+      - -remoteWrite.url=http://victoriametrics:8428
+      - -remoteRead.url=http://victoriametrics:8428
+      - -notifier.blackhole
+    ports: ["127.0.0.1:${VMALERT_PORT:-8880}:8880"]
+    volumes: ["./alerts/rules.yaml:/etc/vmalert/rules.yaml:ro"]
+    depends_on: [victoriametrics]
+
+  victorialogs:
+    <<: *defaults
+    image: victoriametrics/victoria-logs:v1.54.0
+    command: ["-storageDataPath=/storage", "-retentionPeriod=7d"]
+    ports: ["127.0.0.1:${VL_PORT:-9428}:9428"]
+    volumes: ["logs-data:/storage"]
+
+  vector:
+    <<: *defaults
+    image: timberio/vector:0.62.0-alpine
+    command: ["--config", "/etc/vector/vector.yaml"]
+    volumes:
+      # :ro does NOT make the Docker API read-only. Trusted local machine only.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./vector.yaml:/etc/vector/vector.yaml:ro
+      - logs-queue:/var/lib/vector
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8686/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    depends_on: [victorialogs]
+
+  blackbox:
+    <<: *defaults
+    image: prom/blackbox-exporter:v0.29.1
+    command: ["--config.file=/etc/blackbox/config.yaml"]
+    volumes: ["./blackbox.yaml:/etc/blackbox/config.yaml:ro"]
+
+  grafana:
+    <<: *defaults
+    image: grafana/grafana:13.3.1
+    ports: ["127.0.0.1:${GRAFANA_PORT:-3333}:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_PLUGINS_PREINSTALL_SYNC: victoriametrics-logs-datasource@0.34.0
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    depends_on: [victoriametrics, victorialogs]
+
+volumes:
+  metrics-data:
+  metrics-queue:
+  logs-data:
+  logs-queue:
+  grafana-data:

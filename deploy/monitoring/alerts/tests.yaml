@@ -1,0 +1,115 @@
+rule_files: [rules.yaml]
+evaluation_interval: 15s
+tests:
+  - name: healthy targets and successful probe do not alert
+    interval: 15s
+    input_series:
+      - series: 'up{job="dumbwaiter",instance="app:9090"}'
+        values: '1+0x40'
+      - series: 'probe_success{job="known-object",instance="http://app/probe.txt"}'
+        values: '1+0x40'
+    alert_rule_test:
+      - eval_time: 5m
+        groupname: monitoring
+        alertname: MonitoringTargetDown
+        exp_alerts: []
+      - eval_time: 5m
+        groupname: monitoring
+        alertname: DumbwaiterKnownObjectFailed
+        exp_alerts: []
+      - eval_time: 5m
+        groupname: monitoring
+        alertname: DumbwaiterMetricsMissing
+        exp_alerts: []
+      - eval_time: 5m
+        groupname: monitoring
+        alertname: DumbwaiterProbeMissing
+        exp_alerts: []
+      - eval_time: 5m
+        groupname: monitoring
+        alertname: DumbwaiterTLSExpiring
+        exp_alerts: []
+  - name: failed probe respects the pending window and resolves
+    interval: 15s
+    input_series:
+      - series: 'probe_success{job="known-object",instance="http://app/probe.txt"}'
+        values: '0+0x8 1+0x12'
+    alert_rule_test:
+      - eval_time: 30s
+        groupname: monitoring
+        alertname: DumbwaiterKnownObjectFailed
+        exp_alerts: []
+      - eval_time: 2m
+        groupname: monitoring
+        alertname: DumbwaiterKnownObjectFailed
+        exp_alerts:
+          - exp_labels:
+              job: known-object
+              instance: http://app/probe.txt
+              severity: critical
+            exp_annotations:
+              summary: 'Known object status/body check failed: http://app/probe.txt'
+      - eval_time: 4m
+        groupname: monitoring
+        alertname: DumbwaiterKnownObjectFailed
+        exp_alerts: []
+  - name: missing telemetry is not healthy
+    input_series: []
+    alert_rule_test:
+      - eval_time: 3m
+        groupname: monitoring
+        alertname: DumbwaiterMetricsMissing
+        exp_alerts:
+          - exp_labels: {job: dumbwaiter, severity: warning}
+            exp_annotations:
+              summary: 'No dumbwaiter scrape target; check vmagent and service discovery'
+      - eval_time: 3m
+        groupname: monitoring
+        alertname: DumbwaiterProbeMissing
+        exp_alerts:
+          - exp_labels: {job: known-object, severity: warning}
+            exp_annotations:
+              summary: 'Known-object probe data is missing; absence is not success'
+  - name: reload failure fires then clears after the window including a counter reset
+    interval: 15s
+    input_series:
+      - series: 'dumbwaiter_tls_certificate_reload_errors_total{job="dumbwaiter",instance="app:9090"}'
+        values: '0+0x8 1+0x8 0+0x24'
+    alert_rule_test:
+      - eval_time: 1m
+        groupname: monitoring
+        alertname: DumbwaiterTLSReloadFailed
+        exp_alerts: []
+      - eval_time: 4m
+        groupname: monitoring
+        alertname: DumbwaiterTLSReloadFailed
+        exp_alerts:
+          - exp_labels: {job: dumbwaiter, instance: 'app:9090', severity: warning}
+            exp_annotations:
+              summary: 'TLS reload failed; the previous certificate remains active'
+      - eval_time: 10m
+        groupname: monitoring
+        alertname: DumbwaiterTLSReloadFailed
+        exp_alerts: []
+  - name: down target and expiring TLS
+    interval: 15s
+    input_series:
+      - series: 'up{job="dumbwaiter",instance="app:9090"}'
+        values: '0+0x40'
+      - series: 'dumbwaiter_tls_certificate_expiration_timestamp_seconds{job="dumbwaiter",instance="app:9090",cert="/tls/site.pem"}'
+        values: '86400+0x40'
+    alert_rule_test:
+      - eval_time: 2m
+        groupname: monitoring
+        alertname: MonitoringTargetDown
+        exp_alerts:
+          - exp_labels: {job: dumbwaiter, instance: 'app:9090', severity: warning}
+            exp_annotations:
+              summary: 'Cannot scrape dumbwaiter / app:9090'
+      - eval_time: 6m
+        groupname: monitoring
+        alertname: DumbwaiterTLSExpiring
+        exp_alerts:
+          - exp_labels: {job: dumbwaiter, instance: 'app:9090', cert: /tls/site.pem, severity: warning}
+            exp_annotations:
+              summary: 'Certificate expires in less than 7 days: /tls/site.pem'

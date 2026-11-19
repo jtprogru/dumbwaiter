@@ -272,6 +272,44 @@ sudo certbot renew --dry-run
 
 quic-go и в прокси, и в Caddy хочет UDP-буферы около 7 МБ и без них предупреждает при старте. На сервере это лечится `deploy/host/sysctl.conf` в `/etc/sysctl.d/`, изнутри контейнера эти параметры не поднять.
 
+## Локальный мониторинг
+
+Готовый dev-стек **VictoriaMetrics + Grafana + VictoriaLogs** с vmagent, Vector,
+vmalert и blackbox-проверкой известного объекта:
+
+```sh
+make obs-up     # собирает текущее приложение; внешний S3 и секреты не нужны
+make obs-smoke  # проверяет метрики, логи, синтетику и запросы дашбордов
+make obs-down   # останавливает, сохраняя историю в volumes
+```
+
+Grafana: **http://localhost:3333**, `admin` / `admin`. Шесть provisioned дашбордов:
+Overview/RED, S3, Runtime/TLS, Logs, Monitoring health, **Load test / k6**. Все опубликованные порты
+привязаны к loopback. Это отдельный стенд, production Compose не меняется.
+Vector получает Docker socket: mount `:ro` **не** делает Docker API read-only,
+поэтому конфигурация предназначена только для доверенной локальной машины.
+
+[Запуск, проверки, порты и ограничения](deploy/monitoring/README.md) ·
+[Аудит метрик и пробелы для SLO](deploy/monitoring/metrics-audit.md).
+`make obs-check` валидирует конфиги, generated JSON и unit-тесты алертов;
+`make obs-dashboards` обновляет JSON после изменения генератора.
+
+Нагрузка в контейнерах k6, с результатами в VictoriaMetrics/Grafana:
+
+```sh
+make obs-load-up       # opt-in фон на 72h, часовые волны 10–200 RPS
+make obs-load-down     # остановить только фон
+make test-load-smoke   # 30s × 10 RPS (после obs-up)
+make test-load-steady  # 5m × 100 RPS
+make test-load-spike   # 3m, подъём до 200 RPS и восстановление
+make obs-load-check    # короткие E2E проверки профилей и remote write
+```
+
+В смеси специально есть ожидаемые 404/502; фон и ручные прогоны складываются.
+Дашборд сравнивает план/клиент/сервер, latency, фазы ожидания и saturation.
+72h — около 24 млн запросов: учитывай место под access logs и не усыпляй хост.
+[Профили, thresholds и ограничения сравнения](deploy/monitoring/README.md#нагрузка-k6-фоновая-и-ручная).
+
 ## Метрики
 
 `GET /metrics` на admin-порту отдаёт метрики в текстовом формате Prometheus, его же читают VictoriaMetrics и vmagent. Гистограммы классические, с бакетами `le`, так что `histogram_quantile` работает и в PromQL, и в MetricsQL. Без явной настройки admin слушает `127.0.0.1:9090`; systemd использует тот же bind. Container-конфиги явно задают `:9090`: Compose публикует этот порт только на loopback хоста, Kubernetes защищает его NetworkPolicy. Короткие admin-ответы имеют абсолютный write timeout, равный `server.write_idle_timeout`.
@@ -297,7 +335,8 @@ quic-go и в прокси, и в Caddy хочет UDP-буферы около 7
 | `dumbwaiter_tls_certificate_reload_errors_total` | counter | | перечитывания с ошибкой, прокси остался на старых сертификатах |
 | `dumbwaiter_build_info` | gauge | `version`, `goversion` | всегда 1 |
 
-Рядом лежат стандартные `go_*` и `process_*`.
+Рядом лежат `go_*` и `process_*` из VictoriaMetrics/metrics, включая отдельный
+FD collector (`process_open_fds`, `process_max_fds`) на поддерживаемых ОС.
 
 `outcome` принимает значения `complete`, `aborted`, `write_error`, `canceled`, `panic`. `aborted` означает явное прерывание ответа (в частности, при ошибке чтения S3 body), `write_error` — обнаруженную ошибку записи, deadline или flush; отмена request context имеет приоритет и считается `canceled`. `complete` означает завершение handler и flush без обнаруженной ошибки, но не подтверждение получения данных клиентом. Метрики и access log сохраняются также при abort/panic; HTTP `code=0` означает, что статус не был передан нижележащему writer. Отправленный `200` может сочетаться с ошибочным outcome, поэтому только по доле HTTP 5xx судить об успешности скачиваний нельзя.
 

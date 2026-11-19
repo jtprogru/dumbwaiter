@@ -1,0 +1,21 @@
+server:
+  http: {addr: ":8080"}
+  admin: {addr: ":9090"}
+  max_in_flight: 256
+  shutdown_delay: 1s
+log:
+  format: json
+  level: info
+  access: true
+s3:
+  endpoint: http://fixture:8080
+  region: local
+  path_style: true
+  timeout: 2s
+  read_timeout: 2s
+sites:
+  - hosts: [localhost, dumbwaiter, loadtest.local]
+    bucket: demo
+    max_in_flight: 64
+    lookup_timeout: 3s
+    # No SPA/custom 404: the known-object probe must not succeed via fallback.

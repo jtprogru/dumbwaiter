@@ -1,0 +1,41 @@
+# Operational signals, NOT agreed SLOs. Local notifications are blackholed.
+groups:
+  - name: monitoring
+    interval: 15s
+    rules:
+      - alert: MonitoringTargetDown
+        expr: up == 0
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: 'Cannot scrape {{ $labels.job }} / {{ $labels.instance }}'
+      - alert: DumbwaiterMetricsMissing
+        expr: absent(up{job="dumbwaiter"})
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: 'No dumbwaiter scrape target; check vmagent and service discovery'
+      - alert: DumbwaiterKnownObjectFailed
+        expr: probe_success{job="known-object"} == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: 'Known object status/body check failed: {{ $labels.instance }}'
+      - alert: DumbwaiterProbeMissing
+        expr: absent(probe_success{job="known-object"})
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: 'Known-object probe data is missing; absence is not success'
+      - alert: DumbwaiterTLSExpiring
+        expr: dumbwaiter_tls_certificate_expiration_timestamp_seconds{job="dumbwaiter"} - time() < 7 * 86400
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: 'Certificate expires in less than 7 days: {{ $labels.cert }}'
+      - alert: DumbwaiterTLSReloadFailed
+        expr: increase(dumbwaiter_tls_certificate_reload_errors_total{job="dumbwaiter"}[5m]) > 0
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: 'TLS reload failed; the previous certificate remains active'
