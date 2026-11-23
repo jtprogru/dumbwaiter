@@ -4,14 +4,14 @@ go 1.26.0
 
 require (
 	github.com/VictoriaMetrics/metrics v1.45.0
-	github.com/aws/aws-sdk-go-v2 v1.47.8
+	github.com/aws/aws-sdk-go-v2 v1.48.0
 	github.com/quic-go/quic-go v0.65.0
 	go.yaml.in/yaml/v3 v3.0.6
 	golang.org/x/net v0.62.0
 )
 
 require (
-	github.com/aws/smithy-go v1.28.8 // indirect
+	github.com/aws/smithy-go v1.28.9 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/valyala/fastrand v1.1.0 // indirect
 	github.com/valyala/histogram v1.2.0 // indirect
